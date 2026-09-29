@@ -14,7 +14,8 @@ library(patchwork)
 library(mgcv)
 library(INLA)
 
-walk(list.files("R", pattern = "\\.R$", full.names = TRUE), source)
+current_dir <- fs::path_dir(rstudioapi::documentPath())
+walk(list.files(fs::path(current_dir, "R"), pattern = "\\.R$", full.names = TRUE), source)
 
 # -------------------------------------------------------------------------
 # Config
@@ -62,7 +63,7 @@ m_gam <- models$fits$GAM
 m_inla <- models$fits$INLA
 
 national_summary <- bind_rows(
-  map(models$national, \(x) x$summary),
+  bind_rows(map(models$national, \(x) x$summary)),
   summarise_raw_data(dat, window = RAW_SMOOTH_WINDOW, weighted = USE_POPULATION_WEIGHTS)
 )
 
@@ -71,9 +72,6 @@ site_summary <- imap(models$site_draws, \(draws, model) summarise_site_draws(dra
 
 trends <- map(models$national, summarise_trend_draws,
               trend_days = TREND_DAYS, stable_threshold = TREND_STABLE_THRESHOLD) |>
-  bind_rows()
-trends_ols <- map(models$national, summarise_trend_draws_ols,
-                  trend_days = TREND_DAYS, stable_threshold = TREND_STABLE_THRESHOLD) |>
   bind_rows()
 
 latest_trend_summary <- trends |>
@@ -100,9 +98,8 @@ plot_site_fit(site_summary, dat, WWTP_SELECTION)
 # National signal and trend
 # -------------------------------------------------------------------------
 
-plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS) /
-  plot_trend(trends, "interpolated difference") /
-  plot_trend(trends_ols, "OLS slope")
+(plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS)+scale_y_log10()) /
+  plot_trend(trends, "interpolated difference")
 
 # -------------------------------------------------------------------------
 # Nowcast backtest

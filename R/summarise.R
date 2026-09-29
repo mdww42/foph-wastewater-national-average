@@ -76,43 +76,6 @@ summarise_trend_draws <- function(national, trend_days, stable_threshold) {
     )
 }
 
-# Alternative trend: per draw, the OLS slope of log1p(signal) over the last
-# `trend_days`, expressed as % change over `trend_days`.
-summarise_trend_draws_ols <- function(national, trend_days, stable_threshold) {
-  x_all <- national$index$day
-  log_draws <- log1p(pmax(national$draws, 0))
-
-  # per-day equivalent of the +/- stable_threshold-over-trend_days band
-  increase_cutoff <- log1p(stable_threshold) / trend_days
-  decrease_cutoff <- log1p(-stable_threshold) / trend_days
-
-  slope_summary <- map_dfr(seq_along(x_all), function(i) {
-    win <- which(x_all >= x_all[i] - trend_days & x_all <= x_all[i])
-    if (length(win) < 3) {  # too few grid points for a meaningful slope
-      return(tibble(estimate = NA_real_, lower = NA_real_, upper = NA_real_,
-                    p_increasing = NA_real_, p_stable = NA_real_, p_decreasing = NA_real_))
-    }
-
-    xc <- x_all[win] - mean(x_all[win])  # centred x -> intercept drops out
-    slopes <- as.numeric(log_draws[, win, drop = FALSE] %*% xc) / sum(xc^2)
-    pct <- 100 * expm1(slopes * trend_days)
-
-    tibble(
-      estimate = median(pct), lower = quantile(pct, 0.025), upper = quantile(pct, 0.975),
-      p_increasing = mean(slopes > increase_cutoff),
-      p_stable = mean(slopes >= decrease_cutoff & slopes <= increase_cutoff),
-      p_decreasing = mean(slopes < decrease_cutoff)
-    )
-  })
-
-  bind_cols(national$index, slope_summary) |>
-    mutate(
-      direction = if_else(is.na(p_increasing), NA_character_,
-                          classify_direction(p_increasing, p_stable, p_decreasing)),
-      model = national$model, trend_days = trend_days, stable_threshold = stable_threshold
-    )
-}
-
 # ---- Model-free reference -------------------------------------------------
 
 # Per-WWTP rolling median over `window` days, then a (weighted) national mean.
