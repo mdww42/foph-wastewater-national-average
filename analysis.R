@@ -74,10 +74,20 @@ trends <- map(models$national, summarise_trend_draws,
               trend_days = TREND_DAYS, stable_threshold = TREND_STABLE_THRESHOLD) |>
   bind_rows()
 
+site_trends <- imap(models$site_draws, \(draws, model) {
+  summarise_site_trends(draws, models$grid, model, TREND_DAYS, TREND_STABLE_THRESHOLD)
+}) |>
+  bind_rows()
+
 latest_trend_summary <- trends |>
   filter(date == max(date, na.rm = TRUE)) |>
   dplyr::select(model, date, estimate, lower, upper, p_increasing, p_stable, p_decreasing, direction)
 latest_trend_summary
+
+latest_site_trends(site_trends, dat) |>
+  filter(model == "INLA") |>
+  dplyr::select(wwtp, date, estimate, lower, upper, direction, days_since_last_obs) |>
+  arrange(desc(estimate))
 
 # -------------------------------------------------------------------------
 # Diagnostics
@@ -100,6 +110,15 @@ plot_site_fit(site_summary, dat, WWTP_SELECTION)
 
 (plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS)+scale_y_log10()) /
   plot_trend(trends, "interpolated difference")
+
+# -------------------------------------------------------------------------
+# WWTP trends
+# -------------------------------------------------------------------------
+
+plot_site_trend_directions(site_trends, since = max(dat$date) - 180)
+
+plot_trend(filter(site_trends, wwtp %in% WWTP_SELECTION), "by WWTP") +
+  facet_wrap(~ wwtp)
 
 # -------------------------------------------------------------------------
 # Nowcast backtest

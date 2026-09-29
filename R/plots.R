@@ -126,3 +126,23 @@ plot_trend <- function(trends, method_label) {
          title = paste0("Change in Swiss wastewater signal (", method_label, ")"),
          subtitle = paste0("Dotted lines show the ±", 100 * stable_threshold, "% stable range"))
 }
+
+# ---- WWTP trends --------------------------------------------------------------
+
+DIRECTION_COLOURS <- c(increasing = "#D32F2F", stable = "#9E9E9E",
+                       decreasing = "#1976D2", uncertain = "#EEEEEE")
+
+# Trend direction per WWTP over time, one tile per model time bin.
+plot_site_trend_directions <- function(site_trends, since) {
+  site_trends |>
+    filter(date >= since) |>
+    ggplot(aes(date, wwtp, fill = direction)) +
+    geom_tile() +
+    scale_fill_manual(values = DIRECTION_COLOURS, na.value = "white") +
+    facet_wrap(~ model) +
+    theme_classic() +
+    labs(x = NULL, y = NULL, fill = NULL,
+         title = "Trend direction by WWTP",
+         subtitle = paste0("Change over ", first(site_trends$trend_days), " days, ",
+                           "±", 100 * first(site_trends$stable_threshold), "% stable range"))
+}
