@@ -17,18 +17,14 @@ plot_raw_loads <- function(dat) {
 
 plot_inla_components <- function(m_inla, wwtp_levels) {
   national <- m_inla$summary.random$time_ch
-  # replicate blocks are stacked in wwtp_id order within each time ID
-  site <- m_inla$summary.random$time_wwtp |>
-    group_by(ID) |>
-    mutate(wwtp = wwtp_levels) |>
-    ungroup()
+  site <- inla_site_deviations(m_inla, wwtp_levels)
 
   ggplot() +
     geom_ribbon(data = national, aes(ID, ymin = `0.025quant`, ymax = `0.975quant`), alpha = 0.2) +
     geom_line(data = national, aes(ID, mean)) +
-    geom_line(data = site, aes(ID, mean, colour = wwtp), alpha = 0.5) +
+    geom_line(data = site, aes(time, mean, colour = wwtp), alpha = 0.5) +
     theme_classic() +
-    labs(title = "INLA: National RW2 vs WWTP-specific AR1 components")
+    labs(title = "INLA: National RW2 vs WWTP-specific deviations (sum to zero per time bin)")
 }
 
 plot_gam_components <- function(gam_terms) {

@@ -126,6 +126,14 @@ dat |>
 summary(m_inla)
 m_inla$summary.hyperpar
 
+# site deviations must sum to ~0 in every time bin -- if not, constr = TRUE
+# did not apply per group and the constraint needs an explicit extraconstr
+inla_site_deviations(m_inla, levels(dat$wwtp)) |>
+  group_by(time) |>
+  summarise(total = sum(mean)) |>
+  pull(total) |>
+  range()
+
 plot_model_components(dat, m_inla, gam_term_grid(m_gam, models$grid))
 plot_site_fit(site_summary, dat, WWTP_SELECTION)
 

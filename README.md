@@ -16,7 +16,7 @@ All three produce a population-weighted (configurable) national series.
 | Approach | Model | Site structure |
 |---|---|---|
 | **GAM** (`mgcv`) | Gaussian on `log1p(viral_load)`, back-transformed to the mean via `expm1(mu + sig2/2)` | WWTP random intercept + shared smooth of time + WWTP-specific deviation smooths (`bs = "sz"`) |
-| **INLA** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP-specific AR1 (3-day time bins) |
+| **INLA** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over 3-day bins, sum to zero per bin); weak PC priors |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
 For both models, 2000 posterior draws are taken at each WWTP × time-bin point, then

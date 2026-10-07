@@ -13,7 +13,7 @@ fit_gam <- function(dat) {
   gam(
     y ~
       s(wwtp, bs = "re") +               # persistent WWTP-specific baseline
-      s(day, bs = "tp", k = 40) +        # shared temporal component
+      s(day, bs = "tp", k = 80) +        # shared temporal component (k = 40: edf 38.6/39, k-index 0.93)
       s(day, wwtp, bs = "sz", k = 10),   # WWTP-specific deviations from it
     data = dat, method = "REML", select = TRUE
   )
@@ -60,14 +60,33 @@ build_inla_data <- function(dat, grid) {
 }
 
 # Gamma (log link) model on viral_load:
-#   WWTP iid baseline + national RW2 + WWTP-specific AR1 deviations.
+#   WWTP iid baseline + national RW2 + WWTP-specific deviations.
+#
+# The site deviations are iid across WWTPs within each time bin, AR1 over
+# time bins (`group`), and sum to zero within each bin (`constr = TRUE` on a
+# grouped model applies per group). Without that constraint a wave common to
+# all plants can sit in either the national term or in every plant's
+# deviation; the fit put it in the deviations (site SD ~1, rho ~0.97, i.e.
+# ~3-month memory) and left the national RW2 nearly linear.
+#
+# Weak PC priors, P(SD > u) = alpha, on the log scale:
+#   baseline and site deviations: P(SD > 1) = 0.01
+#   national RW2:                 P(SD > 1) = 0.5 (weak, lets it carry waves)
+#
 # censor = TRUE: non-detects enter as left-censored at `loq` (gammasurv);
 # otherwise `inla_data` must not contain zeros.
 fit_inla <- function(inla_data, censor) {
+  inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
+
+  hyper_baseline <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+  hyper_national <- list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper_site_dev <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+
   latent <- ~ 1 +
-    f(wwtp_id, model = "iid") +
-    f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
-    f(time_wwtp, model = "ar1", replicate = wwtp_id)
+    f(wwtp_id, model = "iid", constr = TRUE, hyper = hyper_baseline) +
+    f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE, hyper = hyper_national) +
+    f(wwtp_dev, model = "iid", constr = TRUE, hyper = hyper_site_dev,
+      group = time_wwtp, control.group = list(model = "ar1"))
 
   if (censor) {
     # inla.surv event: 1 = observed, 2 = left-censored (true value < time).
@@ -89,6 +108,17 @@ fit_inla <- function(inla_data, censor) {
     control.predictor = list(compute = TRUE),
     control.compute = list(config = TRUE, waic = TRUE)
   )
+}
+
+# Posterior summary of the site deviations, one row per WWTP x time bin.
+# The grouped term's latent vector runs over WWTPs within each time bin.
+inla_site_deviations <- function(m_inla, wwtp_levels) {
+  m_inla$summary.random$wwtp_dev |>
+    as_tibble() |>
+    mutate(
+      wwtp = factor(wwtp_levels[ID], levels = wwtp_levels),
+      time = (row_number() - 1L) %/% n_distinct(ID) + 1L
+    )
 }
 
 predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
