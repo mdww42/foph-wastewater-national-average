@@ -54,6 +54,7 @@ slider, data.table, tibble and bag.epi.stats.
   at the lab LOQ converted to load units with that day's flow and population. Where LOQ
   or flow is missing, a per-plant proxy (lowest positive load) is used. The GAM drops
   zeros; for sars-cov-2 the 45 zeros drove 82% of its residual variance.
-- The GAM and INLA WWTP baselines are on different scales (log1p identity vs. gamma log
-  link), so they compare only qualitatively.
+- Outliers: samples more than 10x away from the median of the plant's samples within
+  ±7 days are excluded from all estimates (shown flagged in raw-data plots). To confirm
+  with the lab that such values are artefacts.
 - Backtest cutoff dates are eyeballed and still need to be pinned down.

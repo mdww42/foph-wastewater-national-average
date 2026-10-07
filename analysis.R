@@ -44,6 +44,12 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 # The GAM always drops zeros; the raw reference always uses all samples.
 ZERO_HANDLING <- "censor"
 
+# Samples more than OUTLIER_FACTOR x away from the median of the plant's
+# samples within +/- OUTLIER_WINDOW_DAYS are excluded from the models and the
+# raw reference, but shown (flagged) in the raw-data plots.
+OUTLIER_WINDOW_DAYS <- 7L
+OUTLIER_FACTOR <- 10
+
 WWTP_SELECTION <- c("aire", "werdhoelzli", "chur", "laupen")  # for the fit-vs-data plot
 
 RUN_BACKTEST <- FALSE             # refits both models per cutoff -- slow
@@ -52,15 +58,22 @@ RUN_BACKTEST <- FALSE             # refits both models per cutoff -- slow
 # Data
 # -------------------------------------------------------------------------
 
+# all samples, with `outlier` flag -- for the raw-data plots
 dat <- load_wastewater() |>
-  prepare_wastewater(pathogen = PATHOGEN, time_step = TIME_STEP)
+  prepare_wastewater(pathogen = PATHOGEN, time_step = TIME_STEP) |>
+  add_outlier_flag(window_days = OUTLIER_WINDOW_DAYS, factor = OUTLIER_FACTOR)
+
+# without outliers -- for everything that is estimated
+dat_clean <- dat |>
+  filter(!outlier) |>
+  add_time_index(TIME_STEP)
 
 # -------------------------------------------------------------------------
 # Fit models and summarise
 # -------------------------------------------------------------------------
 
 models <- fit_models(
-  dat,
+  dat_clean,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
   weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
 )
@@ -69,7 +82,7 @@ m_inla <- models$fits$INLA
 
 national_summary <- bind_rows(
   bind_rows(map(models$national, \(x) x$summary)),
-  summarise_raw_data(dat, window = RAW_SMOOTH_WINDOW, weighted = USE_POPULATION_WEIGHTS)
+  summarise_raw_data(dat_clean, window = RAW_SMOOTH_WINDOW, weighted = USE_POPULATION_WEIGHTS)
 )
 
 site_summary <- imap(models$site_draws, \(draws, model) summarise_site_draws(draws, models$grid, model)) |>
@@ -89,7 +102,7 @@ latest_trend_summary <- trends |>
   dplyr::select(model, date, estimate, lower, upper, p_increasing, p_stable, p_decreasing, direction)
 latest_trend_summary
 
-latest_site_trends(site_trends, dat) |>
+latest_site_trends(site_trends, dat_clean) |>
   filter(model == "INLA") |>
   dplyr::select(wwtp, date, estimate, lower, upper, direction, days_since_last_obs) |>
   arrange(desc(estimate))
@@ -111,10 +124,11 @@ dat |>
     n = n(),
     n_zero = sum(viral_load == 0),
     n_censored = sum(censored),
+    n_outlier = sum(outlier),
     n_loq_proxy = sum(loq_source == "proxy"),
     median_loq = median(loq)
   ) |>
-  filter(n_censored > 0)
+  filter(n_censored > 0 | n_outlier > 0)
 
 # sanity check of column names / units: `value` recomputed from
 # concentration x flow should match (ratio ~1)
@@ -172,7 +186,7 @@ if (RUN_BACKTEST) {
   plot_window_days <- 100L     # days back from each cutoff to plot
 
   backtest_results <- run_backtest(
-    dat, backtest_cutoffs,
+    dat_clean, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
     weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
   )

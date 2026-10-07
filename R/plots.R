@@ -7,12 +7,14 @@ MODEL_COLOURS <- c("#D32F2F", "#388E3C", "#1976D2")
 
 # ---- Model components -----------------------------------------------------
 
+# All samples; outliers (excluded from the models) marked as red crosses.
 plot_raw_loads <- function(dat) {
-  ggplot(dat, aes(time, viral_load, colour = wwtp)) +
-    geom_line(alpha = 0.5) +
+  ggplot(dat, aes(time, viral_load)) +
+    geom_line(aes(colour = wwtp), alpha = 0.5) +
+    geom_point(data = filter(dat, outlier), shape = 4, colour = "red", size = 2) +
     scale_y_log10() +
     theme_classic() +
-    labs(title = "Raw viral loads by WWTPs")
+    labs(title = "Raw viral loads by WWTPs", subtitle = "Red crosses: outliers, excluded from the models")
 }
 
 plot_inla_components <- function(m_inla, wwtp_levels) {
@@ -62,15 +64,18 @@ plot_model_components <- function(dat, m_inla, gam_terms) {
 
 plot_site_fit <- function(site_summary, dat, wwtps) {
   ggplot(filter(site_summary, wwtp %in% wwtps)) +
-    geom_point(data = filter(dat, wwtp %in% wwtps), aes(date, viral_load),
+    geom_point(data = filter(dat, wwtp %in% wwtps, !outlier), aes(date, viral_load),
                size = 0.4, alpha = 0.8, colour = "grey40") +
+    geom_point(data = filter(dat, wwtp %in% wwtps, outlier), aes(date, viral_load),
+               shape = 4, colour = "red", size = 2) +
     geom_ribbon(aes(date, ymin = lower, ymax = upper, fill = model), alpha = 0.2, colour = NA) +
     geom_line(aes(date, estimate, colour = model), linewidth = 0.6) +
     scale_y_log10() +
     facet_wrap(~ wwtp, scales = "free_y") +
     theme_classic() +
     theme(legend.position = "bottom") +
-    labs(title = "Model fit vs raw data, by WWTP", x = NULL, y = "Viral load")
+    labs(title = "Model fit vs raw data, by WWTP", subtitle = "Red crosses: outliers, excluded from the models",
+         x = NULL, y = "Viral load")
 }
 
 # ---- National signal and trend ----------------------------------------------

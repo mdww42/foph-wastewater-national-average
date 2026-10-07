@@ -53,6 +53,33 @@ add_loq <- function(dat) {
     dplyr::select(-loq_proxy, -loq_lab)
 }
 
+# Single samples far from their plant's neighbouring samples (e.g. chur at
+# the end of 2023, ~30x its neighbours) dominate a time bin and with it the
+# plant's trend. Flags quantified samples more than `factor` x away from the
+# median of the plant's quantified samples within +/- `window_days` (the
+# sample itself included), given at least 3 such samples. Censored samples
+# are never flagged: they are already handled as "below LOQ".
+add_outlier_flag <- function(dat, window_days, factor) {
+  dat |>
+    group_by(wwtp) |>
+    arrange(date, .by_group = TRUE) |>
+    mutate(
+      log_load = if_else(censored | viral_load <= 0, NA_real_, log10(viral_load)),
+      neighbour_median = slider::slide_index_dbl(
+        log_load, date, \(x) median(x, na.rm = TRUE),
+        .before = window_days, .after = window_days
+      ),
+      n_neighbours = slider::slide_index_int(
+        log_load, date, \(x) sum(!is.na(x)),
+        .before = window_days, .after = window_days
+      ),
+      outlier = !is.na(log_load) & n_neighbours >= 3 &
+        abs(log_load - neighbour_median) > log10(factor)
+    ) |>
+    ungroup() |>
+    dplyr::select(-log_load, -neighbour_median, -n_neighbours)
+}
+
 # (Re)computes the day / time indices relative to the first date in `dat`.
 # Separate from prepare_wastewater() so truncated data (backtest) can be
 # re-indexed.
