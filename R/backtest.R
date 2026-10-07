@@ -7,7 +7,7 @@
 # "final" estimate from the full-data fit.
 # -------------------------------------------------------------------------
 
-# `...` is passed on to fit_models() (n_samples, seed, weighted, zero_handling).
+# `...` is passed on to fit_models() (n_samples, seed, weighted, site_memory_days, zero_handling).
 refit_at_cutoff <- function(cutoff_date, dat, time_step, ...) {
   dat_trunc <- dat |>
     filter(date <= cutoff_date) |>

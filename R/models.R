@@ -8,11 +8,11 @@
 
 # ---- GAM ----------------------------------------------------------------
 
-# Gaussian GAM on log1p(viral_load).
+# Gaussian GAM on log1p(viral_load). The sz smooths include each WWTP's
+# level, so a separate s(wwtp, bs = "re") baseline was redundant (edf ~0).
 fit_gam <- function(dat) {
   gam(
     y ~
-      s(wwtp, bs = "re") +               # persistent WWTP-specific baseline
       s(day, bs = "tp", k = 80) +        # shared temporal component (k = 40: edf 38.6/39, k-index 0.93)
       s(day, wwtp, bs = "sz", k = 10),   # WWTP-specific deviations from it
     data = dat, method = "REML", select = TRUE
@@ -30,17 +30,15 @@ predict_gam_site <- function(m_gam, grid, n_samples, seed) {
   expm1(beta_draws %*% t(Xp) + m_gam$sig2 / 2)
 }
 
-# GAM smooth terms evaluated on the grid, for the component / baseline plots.
+# GAM smooth terms evaluated on the grid, for the component plot.
 gam_term_grid <- function(m_gam, grid) {
-  terms <- predict(m_gam, newdata = grid, type = "terms", se.fit = TRUE)
-  stopifnot(all(c("s(wwtp)", "s(day)", "s(day,wwtp)") %in% colnames(terms$fit)))
+  terms <- predict(m_gam, newdata = grid, type = "terms")
+  stopifnot(all(c("s(day)", "s(day,wwtp)") %in% colnames(terms)))
 
   grid |>
     mutate(
-      site_baseline = terms$fit[, "s(wwtp)"],
-      site_baseline_se = terms$se.fit[, "s(wwtp)"],
-      national_trend = terms$fit[, "s(day)"],
-      site_deviation = terms$fit[, "s(day,wwtp)"]
+      national_trend = terms[, "s(day)"],
+      site_deviation = terms[, "s(day,wwtp)"]
     )
 }
 
@@ -69,24 +67,34 @@ build_inla_data <- function(dat, grid) {
 # deviation; the fit put it in the deviations (site SD ~1, rho ~0.97, i.e.
 # ~3-month memory) and left the national RW2 nearly linear.
 #
-# Weak PC priors, P(SD > u) = alpha, on the log scale:
+# With 3-day bins and only that constraint, the deviations turned into
+# short-lived noise instead (SD 0.38, rho 0.84, ~17-day memory): plant
+# trends ranged from -53% to +46%. The prior on rho keeps them slow, so they
+# describe regional differences (waves earlier / later, higher / lower);
+# faster variation goes into the Gamma noise.
+#
+# PC priors, P(SD > u) = alpha, on the log scale:
 #   baseline and site deviations: P(SD > 1) = 0.01
 #   national RW2:                 P(SD > 1) = 0.5 (weak, lets it carry waves)
+# and on the site deviations' AR1 correlation per time bin:
+#   P(rho > exp(-time_step / site_memory_days)) = 0.9, i.e. memory mostly
+#   longer than `site_memory_days`.
 #
 # censor = TRUE: non-detects enter as left-censored at `loq` (gammasurv);
 # otherwise `inla_data` must not contain zeros.
-fit_inla <- function(inla_data, censor) {
+fit_inla <- function(inla_data, censor, time_step, site_memory_days) {
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
 
   hyper_baseline <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
   hyper_national <- list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
   hyper_site_dev <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+  hyper_site_rho <- list(rho = list(prior = "pc.cor1", param = c(exp(-time_step / site_memory_days), 0.9)))
 
   latent <- ~ 1 +
     f(wwtp_id, model = "iid", constr = TRUE, hyper = hyper_baseline) +
     f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE, hyper = hyper_national) +
     f(wwtp_dev, model = "iid", constr = TRUE, hyper = hyper_site_dev,
-      group = time_wwtp, control.group = list(model = "ar1"))
+      group = time_wwtp, control.group = list(model = "ar1", hyper = hyper_site_rho))
 
   if (censor) {
     # inla.surv event: 1 = observed, 2 = left-censored (true value < time).
@@ -105,7 +113,7 @@ fit_inla <- function(inla_data, censor) {
 
   inla(
     formula_inla, family = family, data = inla_data,
-    control.predictor = list(compute = TRUE),
+    control.predictor = list(compute = TRUE, link = 1),
     control.compute = list(config = TRUE, waic = TRUE)
   )
 }
@@ -147,7 +155,7 @@ predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
 # zero_handling: "censor" fits INLA with non-detects left-censored at `loq`;
 # "drop" fits INLA on positive loads only. The GAM always drops zeros (a
 # censored GAM would need mgcv::cnorm()).
-fit_models <- function(dat, time_step, n_samples, seed, weighted,
+fit_models <- function(dat, time_step, n_samples, seed, weighted, site_memory_days,
                        zero_handling = c("censor", "drop")) {
   zero_handling <- match.arg(zero_handling)
   grid <- build_site_time_grid(dat, time_step)
@@ -157,7 +165,7 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted,
 
   censor <- zero_handling == "censor"
   inla_data <- build_inla_data(if (censor) dat else dat_positive, grid)
-  m_inla <- fit_inla(inla_data, censor)
+  m_inla <- fit_inla(inla_data, censor, time_step, site_memory_days)
 
   site_draws <- list(
     GAM = predict_gam_site(m_gam, grid, n_samples, seed),

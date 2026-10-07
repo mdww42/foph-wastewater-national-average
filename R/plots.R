@@ -24,7 +24,8 @@ plot_inla_components <- function(m_inla, wwtp_levels) {
     geom_line(data = national, aes(ID, mean)) +
     geom_line(data = site, aes(time, mean, colour = wwtp), alpha = 0.5) +
     theme_classic() +
-    labs(title = "INLA: National RW2 vs WWTP-specific deviations (sum to zero per time bin)")
+    labs(title = "INLA: National RW2 vs WWTP-specific deviations (sum to zero per time bin)",
+         x = "Time bin")
 }
 
 plot_gam_components <- function(gam_terms) {
@@ -35,42 +36,24 @@ plot_gam_components <- function(gam_terms) {
     labs(title = "GAM: National spline vs WWTP-specific splines")
 }
 
-# Persistent WWTP baseline, GAM (re) vs INLA (iid).
-# NOTE: not on the same numeric scale -- GAM's is on the log1p(viral_load)
-# identity-link scale, INLA's on the gamma log-link scale. Comparable in
-# spirit (both ~ log-fold offset from the overall level), not in units.
-site_baselines <- function(gam_terms, m_inla, wwtp_levels) {
-  gam_baseline <- gam_terms |>
-    distinct(wwtp, site_baseline, site_baseline_se) |>
-    transmute(
-      wwtp, estimate = site_baseline,
-      lower = site_baseline - 1.96 * site_baseline_se,
-      upper = site_baseline + 1.96 * site_baseline_se,
-      model = "GAM"
-    )
-
-  inla_baseline <- m_inla$summary.random$wwtp_id |>
+# Persistent WWTP baseline (INLA iid term), on the log scale. The GAM has
+# no separate baseline: its WWTP levels sit in the sz smooths.
+plot_inla_baseline <- function(m_inla, wwtp_levels) {
+  m_inla$summary.random$wwtp_id |>
     mutate(wwtp = wwtp_levels) |>
-    transmute(wwtp, estimate = mean, lower = `0.025quant`, upper = `0.975quant`, model = "INLA")
-
-  list(INLA = inla_baseline, GAM = gam_baseline)
-}
-
-plot_site_baseline <- function(baseline) {
-  ggplot(baseline, aes(wwtp, estimate, colour = wwtp)) +
+    ggplot(aes(wwtp, mean, colour = wwtp)) +
     geom_hline(yintercept = 0, linetype = 2) +
-    geom_pointrange(aes(ymin = lower, ymax = upper)) +
+    geom_pointrange(aes(ymin = `0.025quant`, ymax = `0.975quant`)) +
     theme_classic() +
-    labs(title = paste0(first(baseline$model), ": Persistent WWTP baseline"),
-         x = NULL, y = "Offset from overall level")
+    labs(title = "INLA: Persistent WWTP baseline",
+         x = NULL, y = "Offset from overall level (log)")
 }
 
 plot_model_components <- function(dat, m_inla, gam_terms) {
   wwtp_levels <- levels(dat$wwtp)
-  baselines <- site_baselines(gam_terms, m_inla, wwtp_levels) |> map(plot_site_baseline)
 
   left <- plot_raw_loads(dat) / plot_inla_components(m_inla, wwtp_levels) / plot_gam_components(gam_terms)
-  right <- plot_spacer() / baselines$INLA / baselines$GAM
+  right <- plot_spacer() / plot_inla_baseline(m_inla, wwtp_levels) / plot_spacer()
 
   (left | right) + plot_layout(widths = c(2, 1), guides = "collect")
 }

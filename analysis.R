@@ -26,7 +26,9 @@ PATHOGEN <- "sars-cov-2"
 
 N_SAMPLES <- 2000                 # posterior draws per model
 SEED <- 123
-TIME_STEP <- 3L                   # days per INLA time bin (also the prediction grid)
+TIME_STEP <- 7L                   # days per INLA time bin (also the prediction grid);
+                                  # 3-day bins let both national and site terms follow sample noise
+SITE_MEMORY_DAYS <- 42L           # site deviations: prior memory mostly longer than this
 USE_POPULATION_WEIGHTS <- TRUE
 TREND_DAYS <- 14L
 TREND_STABLE_THRESHOLD <- 0.10    # +/- 10% over TREND_DAYS counts as "stable"
@@ -61,7 +63,8 @@ dat <- load_wastewater() |>
 models <- fit_models(
   dat,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-  weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
+  weighted = USE_POPULATION_WEIGHTS, site_memory_days = SITE_MEMORY_DAYS,
+  zero_handling = ZERO_HANDLING
 )
 m_gam <- models$fits$GAM
 m_inla <- models$fits$INLA
@@ -173,7 +176,8 @@ if (RUN_BACKTEST) {
   backtest_results <- run_backtest(
     dat, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-    weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
+    weighted = USE_POPULATION_WEIGHTS, site_memory_days = SITE_MEMORY_DAYS,
+    zero_handling = ZERO_HANDLING
   )
 
   final_estimates <- national_summary |>
