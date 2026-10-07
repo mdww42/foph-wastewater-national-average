@@ -16,13 +16,13 @@ All three produce a population-weighted (configurable) national series.
 | Approach | Model | Site structure |
 |---|---|---|
 | **GAM** (`mgcv`) | Gaussian on `log1p(viral_load)`, back-transformed to the mean via `expm1(mu + sig2/2)` | shared smooth of time + WWTP-specific deviation smooths (`bs = "sz"`, which carry the WWTP levels) |
-| **INLA** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin, prior memory mostly > 6 weeks); PC priors |
+| **INLA** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin); INLA default priors |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
 For both models, 2000 posterior draws are taken at each WWTP × time-bin point, then
-aggregated with population weights into national draws. Trends (% change over 14 days,
-with P(increasing / stable / decreasing)) come from those draws in two ways:
-interpolated point-to-point difference and an OLS slope over the window.
+aggregated with population weights into national draws. Trends (% change over 21 days,
+with P(increasing / stable / decreasing)) are computed from those draws, nationally and
+per WWTP.
 
 A nowcast backtest (refit on data truncated at a few cutoff dates, compared with the
 full-data estimate) is included but off by default (`RUN_BACKTEST <- FALSE`).
