@@ -24,7 +24,10 @@ predict_gam_site <- function(m_gam, grid, n_samples, seed) {
 
   set.seed(seed)
   beta_draws <- MASS::mvrnorm(n = n_samples, mu = coef(m_gam), Sigma = vcov(m_gam, unconditional = TRUE))
-  expm1(beta_draws %*% t(Xp))
+  # log1p(viral_load) ~ N(mu, sig2), so E[viral_load] = expm1(mu + sig2 / 2).
+  # expm1(mu) alone would be the median, not the mean that INLA estimates.
+  # sig2 is a point estimate, so its uncertainty is not propagated.
+  expm1(beta_draws %*% t(Xp) + m_gam$sig2 / 2)
 }
 
 # GAM smooth terms evaluated on the grid, for the component / baseline plots.
