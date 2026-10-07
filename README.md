@@ -16,7 +16,7 @@ All three produce a population-weighted (configurable) national series.
 | Approach | Model | Site structure |
 |---|---|---|
 | **GAM** (`mgcv`) | Gaussian on `log1p(viral_load)`, back-transformed to the mean via `expm1(mu + sig2/2)` | WWTP random intercept + shared smooth of time + WWTP-specific deviation smooths (`bs = "sz"`) |
-| **INLA** | Gamma (log link) on `viral_load + SHIFT` | WWTP iid intercept + national RW2 + WWTP-specific AR1 (3-day time bins) |
+| **INLA** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP-specific AR1 (3-day time bins) |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
 For both models, 2000 posterior draws are taken at each WWTP × time-bin point, then
@@ -50,8 +50,10 @@ slider, data.table, tibble and bag.epi.stats.
 
 ## Open points
 
-- `SHIFT = 1` before the Gamma fit is a placeholder; it should probably be linked to the
-  assay LOQ.
+- Zero loads are non-detects. INLA treats them as left-censored (`ZERO_HANDLING`), but
+  at a per-plant proxy LOQ (the lowest positive load reported). Replace it with the
+  per-sample lab LOQ in load units once available. The GAM drops zeros; for sars-cov-2
+  the 45 zeros drove 82% of its residual variance.
 - The GAM and INLA WWTP baselines are on different scales (log1p identity vs. gamma log
   link), so they compare only qualitatively.
 - Backtest cutoff dates are eyeballed and still need to be pinned down.

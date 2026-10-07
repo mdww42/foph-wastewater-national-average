@@ -59,24 +59,39 @@ build_inla_data <- function(dat, grid) {
   )
 }
 
-# Gamma (log link) model on viral_load + shift:
+# Gamma (log link) model on viral_load:
 #   WWTP iid baseline + national RW2 + WWTP-specific AR1 deviations.
-fit_inla <- function(inla_data, shift) {
-  inla_data <- inla_data |> mutate(viral_load = viral_load + shift)
-
-  formula_inla <- viral_load ~ 1 +
+# censor = TRUE: non-detects enter as left-censored at `loq` (gammasurv);
+# otherwise `inla_data` must not contain zeros.
+fit_inla <- function(inla_data, censor) {
+  latent <- ~ 1 +
     f(wwtp_id, model = "iid") +
     f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
     f(time_wwtp, model = "ar1", replicate = wwtp_id)
 
+  if (censor) {
+    # inla.surv event: 1 = observed, 2 = left-censored (true value < time).
+    # Prediction rows have NA time, so they are predicted, not fitted.
+    inla_data <- inla_data |>
+      mutate(
+        surv_time = if_else(censored %in% TRUE, loq, viral_load),
+        surv_event = if_else(censored %in% TRUE, 2L, 1L)
+      )
+    formula_inla <- update(latent, inla.surv(surv_time, surv_event) ~ .)
+    family <- "gammasurv"
+  } else {
+    formula_inla <- update(latent, viral_load ~ .)
+    family <- "gamma"
+  }
+
   inla(
-    formula_inla, family = "gamma", data = inla_data,
+    formula_inla, family = family, data = inla_data,
     control.predictor = list(compute = TRUE),
     control.compute = list(config = TRUE, waic = TRUE)
   )
 }
 
-predict_inla_site <- function(m_inla, inla_data, n_samples, seed, shift) {
+predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
   set.seed(seed)
   samples <- inla.posterior.sample(n = n_samples, result = m_inla)
 
@@ -89,8 +104,8 @@ predict_inla_site <- function(m_inla, inla_data, n_samples, seed, shift) {
   if (anyNA(use_idx)) stop("Could not match all prediction rows to INLA predictor latent indices.")
 
   eta_draws <- t(vapply(samples, function(s) s$latent[idx_predictor[use_idx], 1], numeric(length(pred_rows))))
-  # log link -> exp(eta) is the mean of viral_load + shift; undo the shift
-  exp(eta_draws) - shift
+  # log link -> exp(eta) is the mean viral_load
+  exp(eta_draws)
 }
 
 # ---- Both models --------------------------------------------------------
@@ -98,16 +113,25 @@ predict_inla_site <- function(m_inla, inla_data, n_samples, seed, shift) {
 # Fits GAM and INLA on `dat` and returns, per model, the fit, the site-level
 # draws and the national aggregate. Used for the main analysis and for each
 # backtest cutoff.
-fit_models <- function(dat, time_step, n_samples, seed, shift, weighted) {
+#
+# zero_handling: "censor" fits INLA with non-detects left-censored at `loq`;
+# "drop" fits INLA on positive loads only. The GAM always drops zeros (a
+# censored GAM would need mgcv::cnorm()).
+fit_models <- function(dat, time_step, n_samples, seed, weighted,
+                       zero_handling = c("censor", "drop")) {
+  zero_handling <- match.arg(zero_handling)
   grid <- build_site_time_grid(dat, time_step)
+  dat_positive <- dat |> filter(viral_load > 0)
 
-  m_gam <- fit_gam(dat)
-  inla_data <- build_inla_data(dat, grid)
-  m_inla <- fit_inla(inla_data, shift)
+  m_gam <- fit_gam(dat_positive)
+
+  censor <- zero_handling == "censor"
+  inla_data <- build_inla_data(if (censor) dat else dat_positive, grid)
+  m_inla <- fit_inla(inla_data, censor)
 
   site_draws <- list(
     GAM = predict_gam_site(m_gam, grid, n_samples, seed),
-    INLA = predict_inla_site(m_inla, inla_data, n_samples, seed, shift)
+    INLA = predict_inla_site(m_inla, inla_data, n_samples, seed)
   )
 
   list(

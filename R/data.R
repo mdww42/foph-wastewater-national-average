@@ -20,7 +20,22 @@ prepare_wastewater <- function(wastewater, pathogen, time_step) {
       population = pop,
       y = log1p(viral_load)
     ) |>
+    add_loq() |>
     add_time_index(time_step)
+}
+
+# Zero loads are non-detects: the true load is somewhere below the sample's
+# LOQ. The LOQ in load units is not in the export, so `loq` is a per-plant
+# proxy: the lowest positive load that plant has reported. Replace with the
+# per-sample lab LOQ (LOQ_conc x flow x 1000 / (pop / 1e5)) once available.
+add_loq <- function(dat) {
+  dat |>
+    group_by(wwtp) |>
+    mutate(
+      censored = viral_load == 0,
+      loq = min(viral_load[viral_load > 0])
+    ) |>
+    ungroup()
 }
 
 # (Re)computes the day / time indices relative to the first date in `dat`.

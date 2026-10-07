@@ -32,12 +32,15 @@ TREND_DAYS <- 14L
 TREND_STABLE_THRESHOLD <- 0.10    # +/- 10% over TREND_DAYS counts as "stable"
 RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 
-# Shift applied to viral_load before the Gamma fit, so exact zeros
-# (non-detects) are valid under a strictly-positive family. NOTE: 1 is a
-# nominal placeholder given viral_load ~ 1e10-1e15 -- if this is meant to
-# encode "indistinguishable from below-LOQ", it should probably sit near
-# the assay's actual LOQ on the raw scale, not a flat +1.
-SHIFT <- 1
+# Zero loads are non-detects (below the LOQ). On the log scale a zero sits
+# ~30 units below typical values: for sars-cov-2, 45 zeros caused 82% of
+# the GAM residual variance (sig2 3.25 vs robust 0.34), inflating its mean
+# correction ~5x and pulling the fitted curves down.
+#   "censor": INLA treats them as left-censored at a per-plant LOQ proxy
+#             (see add_loq()). Needed for influenza / RSV.
+#   "drop":   INLA ignores them; biases low periods upwards.
+# The GAM always drops zeros; the raw reference always uses all samples.
+ZERO_HANDLING <- "censor"
 
 WWTP_SELECTION <- c("aire", "werdhoelzli", "chur", "laupen")  # for the fit-vs-data plot
 
@@ -57,7 +60,7 @@ dat <- load_wastewater() |>
 models <- fit_models(
   dat,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-  shift = SHIFT, weighted = USE_POPULATION_WEIGHTS
+  weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
 )
 m_gam <- models$fits$GAM
 m_inla <- models$fits$INLA
@@ -97,6 +100,13 @@ summary(m_gam)
 gratia::draw(m_gam, residuals = TRUE)
 gratia::appraise(m_gam)
 gam.check(m_gam)
+
+# zeros / extreme low values: sig2 should be close to the robust mad(r)^2
+c(sig2 = m_gam$sig2, robust = mad(residuals(m_gam))^2)
+dat |>
+  group_by(wwtp) |>
+  summarise(n = n(), n_zero = sum(censored), loq_proxy = first(loq)) |>
+  filter(n_zero > 0)
 
 summary(m_inla)
 m_inla$summary.hyperpar
@@ -140,7 +150,7 @@ if (RUN_BACKTEST) {
   backtest_results <- run_backtest(
     dat, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-    shift = SHIFT, weighted = USE_POPULATION_WEIGHTS
+    weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
   )
 
   final_estimates <- national_summary |>
