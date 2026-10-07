@@ -36,8 +36,9 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 # ~30 units below typical values: for sars-cov-2, 45 zeros caused 82% of
 # the GAM residual variance (sig2 3.25 vs robust 0.34), inflating its mean
 # correction ~5x and pulling the fitted curves down.
-#   "censor": INLA treats them as left-censored at a per-plant LOQ proxy
-#             (see add_loq()). Needed for influenza / RSV.
+#   "censor": INLA treats them, and positive samples at or below the LOQ,
+#             as left-censored at the LOQ in load units (see add_loq()).
+#             Needed for influenza / RSV.
 #   "drop":   INLA ignores them; biases low periods upwards.
 # The GAM always drops zeros; the raw reference always uses all samples.
 ZERO_HANDLING <- "censor"
@@ -105,8 +106,22 @@ gam.check(m_gam)
 c(sig2 = m_gam$sig2, robust = mad(residuals(m_gam))^2)
 dat |>
   group_by(wwtp) |>
-  summarise(n = n(), n_zero = sum(censored), loq_proxy = first(loq)) |>
-  filter(n_zero > 0)
+  summarise(
+    n = n(),
+    n_zero = sum(viral_load == 0),
+    n_censored = sum(censored),
+    n_loq_proxy = sum(loq_source == "proxy"),
+    median_loq = median(loq)
+  ) |>
+  filter(n_censored > 0)
+
+# sanity check of column names / units: `value` recomputed from
+# concentration x flow should match (ratio ~1)
+dat |>
+  filter(viral_load > 0) |>
+  mutate(ratio = concentration_to_load(concentration, flow, population) / viral_load) |>
+  summarise(n = sum(!is.na(ratio)), min = min(ratio, na.rm = TRUE),
+            median = median(ratio, na.rm = TRUE), max = max(ratio, na.rm = TRUE))
 
 summary(m_inla)
 m_inla$summary.hyperpar

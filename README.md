@@ -50,10 +50,10 @@ slider, data.table, tibble and bag.epi.stats.
 
 ## Open points
 
-- Zero loads are non-detects. INLA treats them as left-censored (`ZERO_HANDLING`), but
-  at a per-plant proxy LOQ (the lowest positive load reported). Replace it with the
-  per-sample lab LOQ in load units once available. The GAM drops zeros; for sars-cov-2
-  the 45 zeros drove 82% of its residual variance.
+- Non-detects and samples at or below the LOQ are left-censored in INLA (`ZERO_HANDLING`)
+  at the lab LOQ converted to load units with that day's flow and population. Where LOQ
+  or flow is missing, a per-plant proxy (lowest positive load) is used. The GAM drops
+  zeros; for sars-cov-2 the 45 zeros drove 82% of its residual variance.
 - The GAM and INLA WWTP baselines are on different scales (log1p identity vs. gamma log
   link), so they compare only qualitatively.
 - Backtest cutoff dates are eyeballed and still need to be pinned down.
