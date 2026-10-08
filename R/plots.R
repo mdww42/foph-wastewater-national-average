@@ -2,8 +2,19 @@
 # Plots
 # -------------------------------------------------------------------------
 
-# GAM, INLA, raw reference (in alphabetical order of the model labels)
-MODEL_COLOURS <- c("#D32F2F", "#388E3C", "#1976D2")
+# GAM red, raw reference blue, INLA models in INLA_COLOURS (in label order).
+INLA_COLOURS <- c("#388E3C", "#F57C00", "#7B1FA2", "#00897B")
+
+model_colours <- function(models) {
+  models <- sort(unique(models))
+  inla <- grep("^INLA", models, value = TRUE)
+  colours <- case_when(
+    models == "GAM" ~ "#D32F2F",
+    models %in% inla ~ INLA_COLOURS[match(models, inla)],
+    TRUE ~ "#1976D2"
+  )
+  set_names(colours, models)
+}
 
 # ---- Model components -----------------------------------------------------
 
@@ -17,7 +28,7 @@ plot_raw_loads <- function(dat) {
     labs(title = "Raw viral loads by WWTPs", subtitle = "Red crosses: outliers, excluded from the models")
 }
 
-plot_inla_components <- function(m_inla, wwtp_levels) {
+plot_inla_components <- function(m_inla, wwtp_levels, model_name) {
   national <- m_inla$summary.random$time_ch
   site <- inla_site_deviations(m_inla, wwtp_levels)
 
@@ -26,7 +37,7 @@ plot_inla_components <- function(m_inla, wwtp_levels) {
     geom_line(data = national, aes(ID, mean)) +
     geom_line(data = site, aes(time, mean, colour = wwtp), alpha = 0.5) +
     theme_classic() +
-    labs(title = "INLA: National RW2 vs WWTP-specific deviations (sum to zero per time bin)",
+    labs(title = paste0(model_name, ": National RW2 vs WWTP-specific deviations (sum to zero per time bin)"),
          x = "Time bin")
 }
 
@@ -40,24 +51,58 @@ plot_gam_components <- function(gam_terms) {
 
 # Persistent WWTP baseline (INLA iid term), on the log scale. The GAM has
 # no separate baseline: its WWTP levels sit in the sz smooths.
-plot_inla_baseline <- function(m_inla, wwtp_levels) {
+plot_inla_baseline <- function(m_inla, wwtp_levels, model_name) {
   m_inla$summary.random$wwtp_id |>
     mutate(wwtp = wwtp_levels) |>
     ggplot(aes(wwtp, mean, colour = wwtp)) +
     geom_hline(yintercept = 0, linetype = 2) +
     geom_pointrange(aes(ymin = `0.025quant`, ymax = `0.975quant`)) +
     theme_classic() +
-    labs(title = "INLA: Persistent WWTP baseline",
+    labs(title = paste0(model_name, ": Persistent WWTP baseline"),
          x = NULL, y = "Offset from overall level (log)")
 }
 
-plot_model_components <- function(dat, m_inla, gam_terms) {
+# inla_fits: named list of INLA fits, one row of panels each.
+plot_model_components <- function(dat, inla_fits, gam_terms) {
   wwtp_levels <- levels(dat$wwtp)
 
-  left <- plot_raw_loads(dat) / plot_inla_components(m_inla, wwtp_levels) / plot_gam_components(gam_terms)
-  right <- plot_spacer() / plot_inla_baseline(m_inla, wwtp_levels) / plot_spacer()
+  left <- c(
+    list(plot_raw_loads(dat)),
+    imap(inla_fits, \(m, model) plot_inla_components(m, wwtp_levels, model)),
+    list(plot_gam_components(gam_terms))
+  )
+  right <- c(
+    list(plot_spacer()),
+    imap(inla_fits, \(m, model) plot_inla_baseline(m, wwtp_levels, model)),
+    list(plot_spacer())
+  )
 
-  (left | right) + plot_layout(widths = c(2, 1), guides = "collect")
+  (wrap_plots(left, ncol = 1) | wrap_plots(right, ncol = 1)) +
+    plot_layout(widths = c(2, 1), guides = "collect")
+}
+
+# WWTP deviations from the national trend (log scale, 0 = in line), median
+# and 95% interval per time bin, for comparing INLA models. Only bins in the
+# prediction grid (from a plant's first sample on) are shown.
+plot_site_deviations <- function(inla_fits, grid, wwtps) {
+  wwtp_levels <- levels(grid$wwtp)
+  deviations <- imap(inla_fits, \(m, model) inla_site_deviations(m, wwtp_levels) |> mutate(model = model)) |>
+    bind_rows() |>
+    inner_join(distinct(grid, wwtp, time, date), by = c("wwtp", "time")) |>
+    filter(wwtp %in% wwtps)
+
+  ggplot(deviations, aes(date, `0.5quant`, colour = model, fill = model)) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_ribbon(aes(ymin = `0.025quant`, ymax = `0.975quant`), alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 0.7) +
+    scale_colour_manual(values = model_colours(deviations$model)) +
+    scale_fill_manual(values = model_colours(deviations$model)) +
+    facet_wrap(~ wwtp) +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    labs(x = NULL, y = "Deviation from national trend (log)", colour = "Model", fill = "Model",
+         title = "WWTP deviations from the national trend",
+         subtitle = "Posterior median and 95% interval; 0 = in line with the national trend")
 }
 
 # ---- Fit vs data ------------------------------------------------------------
@@ -84,13 +129,13 @@ plot_national <- function(national_summary, weighted) {
   ggplot(national_summary) +
     geom_ribbon(aes(date, ymin = lower, ymax = upper, fill = model), alpha = 0.12, colour = NA) +
     geom_line(aes(date, estimate, colour = model), linewidth = 1, alpha = 0.6) +
-    scale_colour_manual(values = MODEL_COLOURS) +
-    scale_fill_manual(values = MODEL_COLOURS) +
+    scale_colour_manual(values = model_colours(national_summary$model)) +
+    scale_fill_manual(values = model_colours(national_summary$model)) +
     theme_classic() +
     labs(x = NULL, y = "Viral load", colour = "Model", fill = "Model",
          title = "Swiss wastewater signal",
          subtitle = paste(if (weighted) "Population-weighted" else "Unweighted",
-                          "national signal: GAM vs INLA"))
+                          "national signal by model"))
 }
 
 plot_trend <- function(trends, method_label) {
@@ -102,8 +147,8 @@ plot_trend <- function(trends, method_label) {
     geom_hline(yintercept = 100 * c(-stable_threshold, stable_threshold), linetype = "dotted") +
     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.12, colour = NA) +
     geom_line(linewidth = 1) +
-    scale_colour_manual(values = MODEL_COLOURS) +
-    scale_fill_manual(values = MODEL_COLOURS) +
+    scale_colour_manual(values = model_colours(trends$model)) +
+    scale_fill_manual(values = model_colours(trends$model)) +
     theme_classic() +
     labs(x = NULL, y = paste0("Change over ", trend_days, " days (%)"),
          colour = "Model", fill = "Model",

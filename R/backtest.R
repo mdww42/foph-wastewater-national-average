@@ -1,13 +1,14 @@
 # -------------------------------------------------------------------------
-# Nowcast backtest: GAM vs INLA
+# Nowcast backtest: GAM vs INLA models
 #
 # For a handful of cutoff dates (wave start, peak, declining, low season),
 # truncate the data to what would have been available at that point, refit
-# both models and compare their nowcast for the preceding weeks against the
+# all models and compare their nowcast for the preceding weeks against the
 # "final" estimate from the full-data fit.
 # -------------------------------------------------------------------------
 
-# `...` is passed on to fit_models() (n_samples, seed, weighted, zero_handling).
+# `...` is passed on to fit_models() (n_samples, seed, weighted, inla_models,
+# zero_handling).
 refit_at_cutoff <- function(cutoff_date, dat, time_step, ...) {
   dat_trunc <- dat |>
     filter(date <= cutoff_date) |>

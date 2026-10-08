@@ -106,8 +106,8 @@ summarise_site_trends <- function(site_draws, grid, model_name, trend_days, stab
 }
 
 # Latest trend per WWTP, with how stale that site's data is: a site without
-# recent samples mostly shows the national trend (the INLA AR1 deviation
-# reverts to zero), not its own.
+# recent samples mostly shows the national trend (an AR1 deviation reverts
+# to zero, an RW1 deviation stays flat), not its own.
 latest_site_trends <- function(site_trends, dat) {
   last_obs <- dat |>
     group_by(wwtp) |>

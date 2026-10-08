@@ -60,28 +60,48 @@ build_inla_data <- function(dat, grid) {
 # Gamma (log link) model on viral_load:
 #   WWTP iid baseline + national RW2 + WWTP-specific deviations.
 #
-# The site deviations are iid across WWTPs within each time bin, AR1 over
-# time bins (`group`), and sum to zero within each bin (`constr = TRUE` on a
-# grouped model applies per group). Without that constraint a wave common to
-# all plants can sit in either the national term or in every plant's
-# deviation; the fit put it in the deviations (site SD ~1, rho ~0.97, i.e.
-# ~3-month memory) and left the national RW2 nearly linear.
+# The site deviations are iid across WWTPs within each time bin and sum to
+# zero within each bin. Without that constraint a wave common to all plants
+# can sit in either the national term or in every plant's deviation; the fit
+# put it in the deviations (site SD ~1, rho ~0.97, i.e. ~3-month memory) and
+# left the national RW2 nearly linear. With it, the national RW2 is the
+# plants' average on the log scale.
 #
-# The site deviations keep a ~3-4 week memory whatever the prior: PC priors
-# pushing them slower were overridden by the data (~1000 samples per plant),
-# so INLA's default priors are used. The baseline is estimated from only 10
+# site_dev sets how a plant's deviation evolves over time bins (`group`):
+#   "ar1": stationary, pulled back to 0 (~3-4 week memory whatever the prior:
+#          PC priors pushing it slower were overridden by the data, ~1000
+#          samples per plant). Reverts to 0 after a plant's last sample.
+#          The per-bin sum to zero is `constr = TRUE` (applies per group).
+#   "rw1": random walk, as in Riou et al. (multilevel_wbe). A deviation can
+#          persist for weeks and is carried forward after the last sample.
+#          The RW1 leaves each plant's level free, so the constraints are set
+#          explicitly (see rw1_site_constraints()).
+# INLA's default priors are used. The baseline is estimated from only 10
 # plants and is the one term where the prior can matter.
 #
 # censor = TRUE: non-detects enter as left-censored at `loq` (gammasurv);
 # otherwise `inla_data` must not contain zeros.
-fit_inla <- function(inla_data, censor) {
+fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1")) {
+  site_dev <- match.arg(site_dev)
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
 
-  latent <- ~ 1 +
-    f(wwtp_id, model = "iid", constr = TRUE) +
-    f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
-    f(wwtp_dev, model = "iid", constr = TRUE,
-      group = time_wwtp, control.group = list(model = "ar1"))
+  if (site_dev == "ar1") {
+    latent <- ~ 1 +
+      f(wwtp_id, model = "iid", constr = TRUE) +
+      f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
+      f(wwtp_dev, model = "iid", constr = TRUE,
+        group = time_wwtp, control.group = list(model = "ar1"))
+  } else {
+    n_wwtp <- max(inla_data$wwtp_id)
+    n_time <- max(inla_data$time_wwtp)
+    site_constr <- rw1_site_constraints(inla_data)
+    latent <- ~ 1 +
+      f(wwtp_id, model = "iid", constr = TRUE) +
+      f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
+      f(wwtp_dev, model = "iid", n = n_wwtp, constr = FALSE, extraconstr = site_constr,
+        group = time_wwtp, ngroup = n_time,
+        control.group = list(model = "rw1", scale.model = TRUE))
+  }
 
   if (censor) {
     # inla.surv event: 1 = observed, 2 = left-censored (true value < time).
@@ -103,6 +123,33 @@ fit_inla <- function(inla_data, censor) {
     control.predictor = list(compute = TRUE, link = 1),
     control.compute = list(config = TRUE, waic = TRUE)
   )
+}
+
+# Linear constraints (A x = 0) on the RW1 site deviations. Their latent
+# vector runs over WWTPs within each time bin, so plant i in bin t is entry
+# (t - 1) * n_wwtp + i. Only a plant's active bins (rows in `inla_data`: its
+# first sample to the end of the grid) are constrained:
+#   - per bin, the active plants' deviations sum to zero (the AR1 version's
+#     `constr = TRUE`, minus plants not yet surveilled);
+#   - per plant, its deviations average to zero over its active bins, as in
+#     Riou et al. The RW1 does not penalise a plant's overall level, which
+#     would otherwise trade off against the iid baseline.
+# Both sets add up every active cell once, so one plant row is redundant and
+# is dropped.
+rw1_site_constraints <- function(inla_data) {
+  n_wwtp <- max(inla_data$wwtp_id)
+  n_time <- max(inla_data$time_wwtp)
+  active <- inla_data |> distinct(wwtp_id, time_wwtp)
+  index <- (active$time_wwtp - 1L) * n_wwtp + active$wwtp_id
+
+  by_wwtp <- split(index, active$wwtp_id)
+  rows <- c(split(index, active$time_wwtp), by_wwtp[-length(by_wwtp)])
+
+  A <- matrix(0, nrow = length(rows), ncol = n_wwtp * n_time)
+  for (k in seq_along(rows)) A[k, rows[[k]]] <- 1
+  if (qr(A)$rank < nrow(A)) stop("RW1 site constraints are linearly dependent.")
+
+  list(A = A, e = rep(0, nrow(A)))
 }
 
 # Posterior summary of the site deviations, one row per WWTP x time bin.
@@ -133,35 +180,43 @@ predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
   exp(eta_draws)
 }
 
-# ---- Both models --------------------------------------------------------
+# ---- All models ---------------------------------------------------------
 
-# Fits GAM and INLA on `dat` and returns, per model, the fit, the site-level
-# draws and the national aggregate. Used for the main analysis and for each
-# backtest cutoff.
+# Fits the GAM and one INLA model per entry of `inla_models` on `dat` and
+# returns, per model, the fit, the site-level draws and the national
+# aggregate. Used for the main analysis and for each backtest cutoff.
 #
+# inla_models: named vector of fit_inla() `site_dev` values; the names are
+# the model labels, e.g. c(INLA_AR1 = "ar1", INLA_RW1 = "rw1").
 # zero_handling: "censor" fits INLA with non-detects left-censored at `loq`;
 # "drop" fits INLA on positive loads only. The GAM always drops zeros (a
 # censored GAM would need mgcv::cnorm()).
-fit_models <- function(dat, time_step, n_samples, seed, weighted,
+fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
                        zero_handling = c("censor", "drop")) {
   zero_handling <- match.arg(zero_handling)
   grid <- build_site_time_grid(dat, time_step)
   dat_positive <- dat |> filter(viral_load > 0)
 
-  m_gam <- fit_gam(dat_positive)
-
   censor <- zero_handling == "censor"
   inla_data <- build_inla_data(if (censor) dat else dat_positive, grid)
-  m_inla <- fit_inla(inla_data, censor)
 
-  site_draws <- list(
-    GAM = predict_gam_site(m_gam, grid, n_samples, seed),
-    INLA = predict_inla_site(m_inla, inla_data, n_samples, seed)
+  fits <- c(
+    list(GAM = fit_gam(dat_positive)),
+    map(inla_models, \(site_dev) fit_inla(inla_data, censor, site_dev))
   )
+
+  site_draws <- imap(fits, \(fit, model) {
+    if (model == "GAM") {
+      predict_gam_site(fit, grid, n_samples, seed)
+    } else {
+      predict_inla_site(fit, inla_data, n_samples, seed)
+    }
+  })
 
   list(
     grid = grid,
-    fits = list(GAM = m_gam, INLA = m_inla),
+    inla_data = inla_data,
+    fits = fits,
     site_draws = site_draws,
     national = imap(site_draws, \(draws, model) aggregate_national_draws(draws, grid, model, weighted))
   )

@@ -1,5 +1,5 @@
 # ============================================================
-# Analysis: Swiss-wide wastewater average -- GAM vs INLA
+# Analysis: Swiss-wide wastewater average -- GAM vs INLA models
 # Ticket:   MTDATA-5048
 # Author:   Moritz Wagner (moritz.wagner@bag.admin.ch)
 #
@@ -33,6 +33,12 @@ TREND_DAYS <- 21L
 TREND_STABLE_THRESHOLD <- 0.10    # +/- 10% over TREND_DAYS counts as "stable"
 RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 
+# INLA models to fit and compare, label = time structure of the WWTP
+# deviations (see fit_inla()):
+#   "ar1": pulled back to 0, ~3-4 week memory
+#   "rw1": random walk as in Riou et al. (multilevel_wbe); deviations persist
+INLA_MODELS <- c(INLA_AR1 = "ar1", INLA_RW1 = "rw1")
+
 # Zero loads are non-detects (below the LOQ). On the log scale a zero sits
 # ~30 units below typical values: for sars-cov-2, 45 zeros caused 82% of
 # the GAM residual variance (sig2 3.25 vs robust 0.34), inflating its mean
@@ -52,7 +58,7 @@ OUTLIER_FACTOR <- 10
 
 WWTP_SELECTION <- c("aire", "werdhoelzli", "chur", "laupen")  # for the fit-vs-data plot
 
-RUN_BACKTEST <- FALSE             # refits both models per cutoff -- slow
+RUN_BACKTEST <- FALSE             # refits all models per cutoff -- slow
 
 # -------------------------------------------------------------------------
 # Data
@@ -75,10 +81,10 @@ dat_clean <- dat |>
 models <- fit_models(
   dat_clean,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-  weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
+  weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS, zero_handling = ZERO_HANDLING
 )
 m_gam <- models$fits$GAM
-m_inla <- models$fits$INLA
+inla_fits <- models$fits[names(INLA_MODELS)]
 
 national_summary <- bind_rows(
   bind_rows(map(models$national, \(x) x$summary)),
@@ -103,9 +109,9 @@ latest_trend_summary <- trends |>
 latest_trend_summary
 
 latest_site_trends(site_trends, dat_clean) |>
-  filter(model == "INLA") |>
-  dplyr::select(wwtp, date, estimate, lower, upper, direction, days_since_last_obs) |>
-  arrange(desc(estimate))
+  filter(model %in% names(INLA_MODELS)) |>
+  dplyr::select(model, wwtp, date, estimate, lower, upper, direction, days_since_last_obs) |>
+  arrange(model, desc(estimate))
 
 # -------------------------------------------------------------------------
 # Diagnostics
@@ -138,19 +144,31 @@ dat |>
   summarise(n = sum(!is.na(ratio)), min = min(ratio, na.rm = TRUE),
             median = median(ratio, na.rm = TRUE), max = max(ratio, na.rm = TRUE))
 
-summary(m_inla)
-m_inla$summary.hyperpar
+map(inla_fits, summary)
+map(inla_fits, \(m) m$summary.hyperpar)
 
-# site deviations must sum to ~0 in every time bin -- if not, constr = TRUE
-# did not apply per group and the constraint needs an explicit extraconstr
-inla_site_deviations(m_inla, levels(dat$wwtp)) |>
-  group_by(time) |>
-  summarise(total = sum(mean)) |>
-  pull(total) |>
-  range()
+# lower WAIC = better fit (same data and likelihood for all INLA models)
+imap(inla_fits, \(m, model) tibble(model = model, waic = m$waic$waic, p_eff = m$waic$p.eff)) |>
+  bind_rows()
 
-plot_model_components(dat, m_inla, gam_term_grid(m_gam, models$grid))
+# site deviations must satisfy their constraints (range ~0):
+#   AR1: sum to 0 over all plants in every time bin -- if not, constr = TRUE
+#        did not apply per group and needs an explicit extraconstr
+#   RW1: the explicit extraconstr rows (per-bin sums and per-plant means)
+if ("INLA_AR1" %in% names(inla_fits)) {
+  inla_site_deviations(inla_fits$INLA_AR1, levels(dat$wwtp)) |>
+    group_by(time) |>
+    summarise(total = sum(mean)) |>
+    pull(total) |>
+    range()
+}
+if ("INLA_RW1" %in% names(inla_fits)) {
+  range(rw1_site_constraints(models$inla_data)$A %*% inla_fits$INLA_RW1$summary.random$wwtp_dev$mean)
+}
+
+plot_model_components(dat, inla_fits, gam_term_grid(m_gam, models$grid))
 plot_site_fit(site_summary, dat, WWTP_SELECTION)
+plot_site_deviations(inla_fits, models$grid, WWTP_SELECTION)
 
 # -------------------------------------------------------------------------
 # National signal and trend
@@ -188,11 +206,11 @@ if (RUN_BACKTEST) {
   backtest_results <- run_backtest(
     dat_clean, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-    weighted = USE_POPULATION_WEIGHTS, zero_handling = ZERO_HANDLING
+    weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS, zero_handling = ZERO_HANDLING
   )
 
   final_estimates <- national_summary |>
-    filter(model %in% c("GAM", "INLA")) |>
+    filter(model %in% c("GAM", names(INLA_MODELS))) |>
     dplyr::select(date, model, final_estimate = estimate, final_lower = lower, final_upper = upper)
 
   backtest_results |>
