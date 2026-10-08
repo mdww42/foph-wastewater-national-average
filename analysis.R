@@ -37,7 +37,9 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 # deviations (see fit_inla()):
 #   "ar1": pulled back to 0, ~3-4 week memory
 #   "rw1": random walk as in Riou et al. (multilevel_wbe); deviations persist
-INLA_MODELS <- c(INLA_AR1 = "ar1", INLA_RW1 = "rw1")
+#   "rw1_paper": the paper's RW1 term as written, without the sum to zero
+#                across plants per time bin
+INLA_MODELS <- c(INLA_AR1 = "ar1", INLA_RW1 = "rw1", INLA_RW1_PAPER = "rw1_paper")
 
 # Zero loads are non-detects (below the LOQ). On the log scale a zero sits
 # ~30 units below typical values: for sars-cov-2, 45 zeros caused 82% of
