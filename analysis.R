@@ -35,11 +35,12 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 
 # INLA models to fit and compare, label = time structure of the WWTP
 # deviations (see fit_inla()):
-#   "ar1": pulled back to 0, ~3-4 week memory
+#   "ar1": pulled back to 0 (fitted weekly rho ~0.8 sars-cov-2, ~0.7
+#          influenza A); best WAIC for both
 #   "rw1": random walk as in Riou et al. (multilevel_wbe); deviations persist
-#   "rw1_paper": the paper's RW1 term as written, without the sum to zero
-#                across plants per time bin
-INLA_MODELS <- c(INLA_AR1 = "ar1", INLA_RW1 = "rw1", INLA_RW1_PAPER = "rw1_paper")
+#          after a plant's last sample. Same deviations in the backtest;
+#          add `INLA_RW1 = "rw1"` as a sensitivity check.
+INLA_MODELS <- c(INLA_AR1 = "ar1")
 
 # Positive samples at or below the LOQ (sars-cov-2 ~16%, influenza A ~48%).
 # The lab considers them usable concentrations.

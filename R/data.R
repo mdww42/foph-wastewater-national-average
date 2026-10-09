@@ -68,15 +68,17 @@ add_loq <- function(dat, detection_quantile = 0.05) {
 # Single samples far from their plant's neighbouring samples (e.g. chur at
 # the end of 2023, ~30x its neighbours) dominate a time bin and with it the
 # plant's trend. Flags quantified samples more than `factor` x away from the
-# median of the plant's quantified samples within +/- `window_days` (the
-# sample itself included), given at least 3 such samples. Censored samples
-# and below-LOQ samples are never flagged: they are imprecise by definition.
+# median of the plant's positive samples (quantified and below-LOQ) within
+# +/- `window_days` (the sample itself included), given at least 3 such
+# samples. Below-LOQ samples count as neighbours, so the rule also works in
+# low seasons (influenza: mostly below-LOQ samples and zeros), but are not
+# flagged themselves: they are noisier by definition. Zeros are neither.
 add_outlier_flag <- function(dat, window_days, factor) {
   dat |>
     group_by(wwtp) |>
     arrange(date, .by_group = TRUE) |>
     mutate(
-      log_load = if_else(blq | viral_load <= 0, NA_real_, log10(viral_load)),
+      log_load = if_else(viral_load > 0, log10(viral_load), NA_real_),
       neighbour_median = slider::slide_index_dbl(
         log_load, date, \(x) median(x, na.rm = TRUE),
         .before = window_days, .after = window_days
@@ -85,7 +87,7 @@ add_outlier_flag <- function(dat, window_days, factor) {
         log_load, date, \(x) sum(!is.na(x)),
         .before = window_days, .after = window_days
       ),
-      outlier = !is.na(log_load) & n_neighbours >= 3 &
+      outlier = !blq & !is.na(log_load) & n_neighbours >= 3 &
         abs(log_load - neighbour_median) > log10(factor)
     ) |>
     ungroup() |>

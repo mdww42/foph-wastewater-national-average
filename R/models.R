@@ -79,11 +79,9 @@ build_inla_data <- function(dat, grid) {
 #          bins, which `extraconstr` on a grouped term cannot express (it is
 #          applied within each group), so the term is a generic0 with the
 #          precision of a scaled RW1 over bins x iid over plants.
-#   "rw1_paper": the paper's term as written (`f(day1, model = "rw1",
-#          constr = TRUE, group = ara2, control.group = list(model = "iid"))`):
-#          a RW1 per plant, centred over all time bins, no sum to zero across
-#          plants. A wave common to all plants can then sit in the national
-#          RW2 or in every plant's deviation (see above).
+# The paper's own term (RW1 per plant, centred over all bins, no sum to zero
+# across plants) was also tried: same deviations, but much wider intervals,
+# as the national RW2 and the plants' common shift are not identified.
 # INLA's default priors are used. The baseline is estimated from only 10
 # plants and is the one term where the prior can matter.
 #
@@ -92,7 +90,7 @@ build_inla_data <- function(dat, grid) {
 # blq_extra = TRUE: observed below-LOQ samples get an extra per-sample iid
 # effect, i.e. more spread than the Gamma noise; its PC prior shrinks the
 # extra SD towards 0, so ~0 means they behave like quantified samples.
-fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"),
+fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1"),
                      blq_extra = FALSE) {
   site_dev <- match.arg(site_dev)
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
@@ -103,12 +101,6 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"),
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
       f(wwtp_dev, model = "iid", constr = TRUE,
         group = time_wwtp, control.group = list(model = "ar1"))
-  } else if (site_dev == "rw1_paper") {
-    latent <- ~ 1 +
-      f(wwtp_id, model = "iid", constr = TRUE) +
-      f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
-      f(time_wwtp, model = "rw1", scale.model = TRUE, constr = TRUE,
-        group = wwtp_dev, control.group = list(model = "iid"))
   } else {
     n_wwtp <- max(inla_data$wwtp_id)
     n_time <- max(inla_data$time_wwtp)
@@ -149,13 +141,11 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"),
     family <- "gamma"
   }
 
-  m_inla <- inla(
+  inla(
     formula_inla, family = family, data = inla_data,
     control.predictor = list(compute = TRUE, link = 1),
     control.compute = list(config = TRUE, waic = TRUE)
   )
-  m_inla$site_dev <- site_dev
-  m_inla
 }
 
 # Precision of the RW1 site deviations: RW1 over time bins (scaled to
@@ -199,26 +189,15 @@ rw1_site_constraints <- function(inla_data) {
 }
 
 # Posterior summary of the site deviations, one row per WWTP x time bin.
-# For "ar1" and "rw1" the latent vector runs over WWTPs within each time bin;
-# for "rw1_paper" over time bins within each WWTP (term `time_wwtp`).
+# In both versions the latent vector runs over WWTPs within each time bin.
 inla_site_deviations <- function(m_inla, wwtp_levels) {
   n_wwtp <- length(wwtp_levels)
-  if (identical(m_inla$site_dev, "rw1_paper")) {
-    deviations <- m_inla$summary.random$time_wwtp |> as_tibble()
-    n_time <- nrow(deviations) / n_wwtp
-    deviations |>
-      mutate(
-        wwtp = factor(wwtp_levels[(row_number() - 1L) %/% n_time + 1L], levels = wwtp_levels),
-        time = ID
-      )
-  } else {
-    m_inla$summary.random$wwtp_dev |>
-      as_tibble() |>
-      mutate(
-        wwtp = factor(wwtp_levels[(row_number() - 1L) %% n_wwtp + 1L], levels = wwtp_levels),
-        time = (row_number() - 1L) %/% n_wwtp + 1L
-      )
-  }
+  m_inla$summary.random$wwtp_dev |>
+    as_tibble() |>
+    mutate(
+      wwtp = factor(wwtp_levels[(row_number() - 1L) %% n_wwtp + 1L], levels = wwtp_levels),
+      time = (row_number() - 1L) %/% n_wwtp + 1L
+    )
 }
 
 predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
