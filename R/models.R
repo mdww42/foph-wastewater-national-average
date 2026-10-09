@@ -87,9 +87,13 @@ build_inla_data <- function(dat, grid) {
 # INLA's default priors are used. The baseline is estimated from only 10
 # plants and is the one term where the prior can matter.
 #
-# censor = TRUE: non-detects enter as left-censored at `loq` (gammasurv);
-# otherwise `inla_data` must not contain zeros.
-fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper")) {
+# censor = TRUE: rows with `censored` enter as left-censored at `censor_at`
+# (gammasurv); otherwise `inla_data` must not contain zeros.
+# blq_extra = TRUE: observed below-LOQ samples get an extra per-sample iid
+# effect, i.e. more spread than the Gamma noise; its PC prior shrinks the
+# extra SD towards 0, so ~0 means they behave like quantified samples.
+fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"),
+                     blq_extra = FALSE) {
   site_dev <- match.arg(site_dev)
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
 
@@ -123,12 +127,19 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"))
         constr = FALSE, extraconstr = site_constr)
   }
 
+  if (blq_extra) {
+    inla_data <- inla_data |>
+      mutate(blq_obs = if_else(blq %in% TRUE & !(censored %in% TRUE), row_number(), NA_integer_))
+    latent <- update(latent, ~ . + f(blq_obs, model = "iid",
+                                     hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))))
+  }
+
   if (censor) {
     # inla.surv event: 1 = observed, 2 = left-censored (true value < time).
     # Prediction rows have NA time, so they are predicted, not fitted.
     inla_data <- inla_data |>
       mutate(
-        surv_time = if_else(censored %in% TRUE, loq, viral_load),
+        surv_time = if_else(censored %in% TRUE, censor_at, viral_load),
         surv_event = if_else(censored %in% TRUE, 2L, 1L)
       )
     formula_inla <- update(latent, inla.surv(surv_time, surv_event) ~ .)
@@ -235,21 +246,35 @@ predict_inla_site <- function(m_inla, inla_data, n_samples, seed) {
 #
 # inla_models: named vector of fit_inla() `site_dev` values; the names are
 # the model labels, e.g. c(INLA_AR1 = "ar1", INLA_RW1 = "rw1").
-# zero_handling: "censor" fits INLA with non-detects left-censored at `loq`;
-# "drop" fits INLA on positive loads only. The GAM always drops zeros (a
+# blq_handling, positive samples at or below the LOQ in INLA:
+#   "censored":       left-censored at `loq`
+#   "observed":       used as measured
+#   "observed_extra": used as measured, with extra estimated spread
+# zero_handling, non-detects in INLA:
+#   "censor": left-censored at the plant's `detection_floor`
+#   "drop":   removed
+# The GAM always uses below-LOQ samples as measured and drops zeros (a
 # censored GAM would need mgcv::cnorm()).
 fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
+                       blq_handling = c("censored", "observed", "observed_extra"),
                        zero_handling = c("censor", "drop")) {
+  blq_handling <- match.arg(blq_handling)
   zero_handling <- match.arg(zero_handling)
   grid <- build_site_time_grid(dat, time_step)
   dat_positive <- dat |> filter(viral_load > 0)
 
-  censor <- zero_handling == "censor"
-  inla_data <- build_inla_data(if (censor) dat else dat_positive, grid)
+  dat_inla <- (if (zero_handling == "drop") dat_positive else dat) |>
+    mutate(
+      censored = viral_load == 0 | (blq & blq_handling == "censored"),
+      censor_at = if_else(viral_load == 0, detection_floor, loq)
+    )
+  censor <- any(dat_inla$censored)
+  inla_data <- build_inla_data(dat_inla, grid)
+  blq_extra <- blq_handling == "observed_extra"
 
   fits <- c(
     list(GAM = fit_gam(dat_positive)),
-    map(inla_models, \(site_dev) fit_inla(inla_data, censor, site_dev))
+    map(inla_models, \(site_dev) fit_inla(inla_data, censor, site_dev, blq_extra))
   )
 
   site_draws <- imap(fits, \(fit, model) {

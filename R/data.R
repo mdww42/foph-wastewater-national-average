@@ -35,11 +35,19 @@ concentration_to_load <- function(concentration, flow, population) {
   concentration * flow * 1000 / (population / 1e5)
 }
 
-# Non-detects and samples at or below the LOQ are censored: the true load is
-# somewhere below the sample's LOQ, converted to load units with that day's
-# flow and population. Where the lab LOQ or flow is missing, `loq` falls back
-# to a per-plant proxy: the lowest positive load the plant has reported.
-add_loq <- function(dat) {
+# The sample's LOQ in load units (lab LOQ converted with that day's flow and
+# population), and `blq`: a positive load at or below the LOQ (zeros are
+# non-detects, not `blq`). Where the lab LOQ or flow is missing, `loq` falls
+# back to a per-plant proxy: the lowest positive load the plant has reported.
+#
+# `detection_floor`: the bound for non-detects, in load units. The lab
+# reports positive concentrations well below the LOQ (influenza A down to
+# ~2-3% of it at every plant), so a zero means "below what the lab detects",
+# not "below the LOQ". Per plant, the `detection_quantile` quantile of its
+# positive concentrations, converted with that day's flow and population.
+#
+# Which samples are censored is decided at fit time (see fit_models()).
+add_loq <- function(dat, detection_quantile = 0.05) {
   dat |>
     group_by(wwtp) |>
     mutate(
@@ -47,7 +55,11 @@ add_loq <- function(dat) {
       loq_lab = concentration_to_load(loq_concentration, flow, population),
       loq_source = if_else(is.na(loq_lab), "proxy", "lab"),
       loq = coalesce(loq_lab, loq_proxy),
-      censored = below_loq %in% TRUE | viral_load == 0
+      detection_floor = concentration_to_load(
+        quantile(concentration[concentration > 0], detection_quantile, na.rm = TRUE, names = FALSE),
+        flow, population
+      ),
+      blq = below_loq %in% TRUE & viral_load > 0
     ) |>
     ungroup() |>
     dplyr::select(-loq_proxy, -loq_lab)
@@ -58,13 +70,13 @@ add_loq <- function(dat) {
 # plant's trend. Flags quantified samples more than `factor` x away from the
 # median of the plant's quantified samples within +/- `window_days` (the
 # sample itself included), given at least 3 such samples. Censored samples
-# are never flagged: they are already handled as "below LOQ".
+# and below-LOQ samples are never flagged: they are imprecise by definition.
 add_outlier_flag <- function(dat, window_days, factor) {
   dat |>
     group_by(wwtp) |>
     arrange(date, .by_group = TRUE) |>
     mutate(
-      log_load = if_else(censored | viral_load <= 0, NA_real_, log10(viral_load)),
+      log_load = if_else(blq | viral_load <= 0, NA_real_, log10(viral_load)),
       neighbour_median = slider::slide_index_dbl(
         log_load, date, \(x) median(x, na.rm = TRUE),
         .before = window_days, .after = window_days

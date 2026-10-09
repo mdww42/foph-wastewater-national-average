@@ -16,7 +16,7 @@ All produce a population-weighted (configurable) national series.
 | Approach | Model | Site structure |
 |---|---|---|
 | **GAM** (`mgcv`) | Gaussian on `log1p(viral_load)`, back-transformed to the mean via `expm1(mu + sig2/2)` | shared smooth of time + WWTP-specific deviation smooths (`bs = "sz"`, which carry the WWTP levels) |
-| **INLA_AR1** | Gamma (log link) on `viral_load`; non-detects left-censored (`gammasurv`) | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin); INLA default priors |
+| **INLA_AR1** | Gamma (log link) on `viral_load`; non-detects left-censored at the LOQ (`gammasurv`), below-LOQ samples per `BLQ_HANDLING` | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin); INLA default priors |
 | **INLA_RW1** | as INLA_AR1 | as INLA_AR1, but the WWTP deviations are a RW1 over time bins (as in Riou et al., [multilevel_wbe](https://github.com/foph-modelling/multilevel_wbe)), summing to zero per bin and centred per WWTP |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
@@ -55,10 +55,14 @@ slider, data.table, tibble and bag.epi.stats.
 
 ## Open points
 
-- Non-detects and samples at or below the LOQ are left-censored in INLA (`ZERO_HANDLING`)
-  at the lab LOQ converted to load units with that day's flow and population. Where LOQ
-  or flow is missing, a per-plant proxy (lowest positive load) is used. The GAM drops
-  zeros; for sars-cov-2 the 45 zeros drove 82% of its residual variance.
+- Non-detects are left-censored in INLA (`ZERO_HANDLING`) at an empirical detection floor:
+  no LODs are available, so per plant the 5th percentile of its positive concentrations
+  (influenza A: ~3% of the LOQ), converted to load units with that day's flow and
+  population. Positive samples below
+  the LOQ (`BLQ_HANDLING`) are censored, used as measured, or used as measured with an
+  estimated extra spread; the lab considers them usable. Censoring them left ~88% of
+  influenza A samples censored and the low season unidentified. The GAM drops zeros;
+  for sars-cov-2 the 45 zeros drove 82% of its residual variance.
 - Outliers: samples more than 10x away from the median of the plant's samples within
   ±7 days are excluded from all estimates (shown flagged in raw-data plots). To confirm
   with the lab that such values are artefacts.

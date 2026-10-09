@@ -41,14 +41,23 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 #                across plants per time bin
 INLA_MODELS <- c(INLA_AR1 = "ar1", INLA_RW1 = "rw1", INLA_RW1_PAPER = "rw1_paper")
 
-# Zero loads are non-detects (below the LOQ). On the log scale a zero sits
-# ~30 units below typical values: for sars-cov-2, 45 zeros caused 82% of
-# the GAM residual variance (sig2 3.25 vs robust 0.34), inflating its mean
-# correction ~5x and pulling the fitted curves down.
-#   "censor": INLA treats them, and positive samples at or below the LOQ,
-#             as left-censored at the LOQ in load units (see add_loq()).
-#             Needed for influenza / RSV.
-#   "drop":   INLA ignores them; biases low periods upwards.
+# Positive samples at or below the LOQ (sars-cov-2 ~16%, influenza A ~48%).
+# The lab considers them usable concentrations.
+#   "censored":       INLA treats them as left-censored at the LOQ in load
+#                     units (see add_loq()). For influenza A that left ~88% of
+#                     samples censored and the low season without a lower
+#                     bound (intervals spanning 1e5-1e13).
+#   "observed":       used as measured
+#   "observed_extra": used as measured, plus an estimated extra spread
+BLQ_HANDLING <- "observed_extra"
+
+# Zero loads are non-detects (sars-cov-2 45, influenza A ~41%). On the log
+# scale a zero sits ~30 units below typical values: for sars-cov-2, 45 zeros
+# caused 82% of the GAM residual variance (sig2 3.25 vs robust 0.34),
+# inflating its mean correction ~5x and pulling the fitted curves down.
+#   "censor": INLA treats them as left-censored at the plant's detection
+#             floor (see add_loq()): "below what the lab detects"
+#   "drop":   INLA ignores them; biases low periods upwards
 # The GAM always drops zeros; the raw reference always uses all samples.
 ZERO_HANDLING <- "censor"
 
@@ -83,7 +92,8 @@ dat_clean <- dat |>
 models <- fit_models(
   dat_clean,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-  weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS, zero_handling = ZERO_HANDLING
+  weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
+  blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
 )
 m_gam <- models$fits$GAM
 inla_fits <- models$fits[names(INLA_MODELS)]
@@ -131,12 +141,13 @@ dat |>
   summarise(
     n = n(),
     n_zero = sum(viral_load == 0),
-    n_censored = sum(censored),
+    n_blq = sum(blq),
     n_outlier = sum(outlier),
     n_loq_proxy = sum(loq_source == "proxy"),
-    median_loq = median(loq)
+    median_loq = median(loq),
+    median_detection_floor = median(detection_floor)
   ) |>
-  filter(n_censored > 0 | n_outlier > 0)
+  filter(n_zero > 0 | n_blq > 0 | n_outlier > 0)
 
 # sanity check of column names / units: `value` recomputed from
 # concentration x flow should match (ratio ~1)
@@ -148,6 +159,17 @@ dat |>
 
 map(inla_fits, summary)
 map(inla_fits, \(m) m$summary.hyperpar)
+
+# extra SD (log scale) of below-LOQ samples on top of the Gamma noise; ~0 =
+# they behave like quantified samples
+if (BLQ_HANDLING == "observed_extra") {
+  imap(inla_fits, \(m, model) {
+    prec <- m$summary.hyperpar["Precision for blq_obs", ]
+    tibble(model = model, sd = 1 / sqrt(prec$`0.5quant`),
+           lower = 1 / sqrt(prec$`0.975quant`), upper = 1 / sqrt(prec$`0.025quant`))
+  }) |>
+    bind_rows()
+}
 
 # lower WAIC = better fit (same data and likelihood for all INLA models)
 imap(inla_fits, \(m, model) tibble(model = model, waic = m$waic$waic, p_eff = m$waic$p.eff)) |>
@@ -208,7 +230,8 @@ if (RUN_BACKTEST) {
   backtest_results <- run_backtest(
     dat_clean, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
-    weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS, zero_handling = ZERO_HANDLING
+    weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
+    blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
   )
 
   final_estimates <- national_summary |>
