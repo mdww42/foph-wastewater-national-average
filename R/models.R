@@ -114,7 +114,12 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1", "rw1_paper"))
     latent <- ~ 1 +
       f(wwtp_id, model = "iid", constr = TRUE) +
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
-      f(wwtp_dev, model = "generic0", Cmatrix = site_precision, rankdef = n_wwtp,
+      # rankdef = number of constraints: INLA does not correct the prior's
+      # normalising constant for `extraconstr`, and with rankdef = n_wwtp the
+      # missing ~(n_constr - n_wwtp) / 2 * log(tau) pushed the precision to
+      # ~2e6, i.e. switched the deviations off. The constraints include the
+      # RW1's null space (each plant's level).
+      f(wwtp_dev, model = "generic0", Cmatrix = site_precision, rankdef = nrow(site_constr$A),
         constr = FALSE, extraconstr = site_constr)
   }
 
