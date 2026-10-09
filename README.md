@@ -62,9 +62,8 @@ slider, data.table, tibble and bag.epi.stats.
 ## Open points
 
 - Non-detects are left-censored in INLA (`ZERO_HANDLING`) at an empirical detection floor:
-  no LODs are available, so per plant the 5th percentile of its positive concentrations
-  (influenza A: ~3% of the LOQ), converted to load units with that day's flow and
-  population. Positive samples below
+  no LODs are available, so 0.033 x the sample's LOQ, the 5th percentile of positive
+  concentrations at every plant for influenza A/B and RSV (one lab, one method). Positive samples below
   the LOQ (`BLQ_HANDLING`) are censored, used as measured, or used as measured with an
   estimated extra spread; the lab considers them usable. Censoring them left ~88% of
   influenza A samples censored and the low season unidentified. The GAM drops zeros;

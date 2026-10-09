@@ -41,13 +41,16 @@ concentration_to_load <- function(concentration, flow, population) {
 # back to a per-plant proxy: the lowest positive load the plant has reported.
 #
 # `detection_floor`: the bound for non-detects, in load units. The lab
-# reports positive concentrations well below the LOQ (influenza A down to
-# ~2-3% of it at every plant), so a zero means "below what the lab detects",
-# not "below the LOQ". Per plant, the `detection_quantile` quantile of its
-# positive concentrations, converted with that day's flow and population.
+# reports positive concentrations well below the LOQ, so a zero means "below
+# what the lab detects", not "below the LOQ". No LODs are available; for
+# influenza A, influenza B and RSV the 5th percentile of positive
+# concentrations is 0.032-0.035 x LOQ at every plant (one lab, one method),
+# so the floor is `detection_fraction` x the sample's LOQ. (A per-plant
+# quantile fails for sars-cov-2: it rarely gets that low, and its 5th
+# percentile is 0.16-0.79 x LOQ.)
 #
 # Which samples are censored is decided at fit time (see fit_models()).
-add_loq <- function(dat, detection_quantile = 0.05) {
+add_loq <- function(dat, detection_fraction = 0.033) {
   dat |>
     group_by(wwtp) |>
     mutate(
@@ -55,10 +58,7 @@ add_loq <- function(dat, detection_quantile = 0.05) {
       loq_lab = concentration_to_load(loq_concentration, flow, population),
       loq_source = if_else(is.na(loq_lab), "proxy", "lab"),
       loq = coalesce(loq_lab, loq_proxy),
-      detection_floor = concentration_to_load(
-        quantile(concentration[concentration > 0], detection_quantile, na.rm = TRUE, names = FALSE),
-        flow, population
-      ),
+      detection_floor = detection_fraction * loq,
       blq = below_loq %in% TRUE & viral_load > 0
     ) |>
     ungroup() |>
