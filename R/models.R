@@ -82,7 +82,8 @@ build_inla_data <- function(dat, grid) {
 # The paper's own term (RW1 per plant, centred over all bins, no sum to zero
 # across plants) was also tried: same deviations, but much wider intervals,
 # as the national RW2 and the plants' common shift are not identified.
-# INLA's default priors are used, except for the plant levels (see below).
+# INLA's default priors are used. The baseline is estimated from only 10
+# plants and is the one term where the prior can matter.
 #
 # censor = TRUE: rows with `censored` enter as left-censored at `censor_at`
 # (gammasurv); otherwise `inla_data` must not contain zeros.
@@ -102,18 +103,13 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1"),
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
   n_wwtp <- max(inla_data$wwtp_id)
   if (is.null(constraint_weights)) constraint_weights <- rep(1, n_wwtp)
-  # Plant levels rest on 10 plants, and a permanent level can also sit in a
-  # plant's deviation. INLA's default iid prior (loggamma(1, 5e-5)) pushed
-  # the levels to ~0 (precision ~2e4) and into the AR1 (rho 0.79 -> 0.92).
-  # The PC prior P(SD > 1) = 1% keeps them in the level term.
-  level_prior <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
 
   if (site_dev == "ar1") {
     # `extraconstr` on a grouped term is applied within each group, i.e. in
     # every time bin: sum_i w_i * d_it = 0.
     ar1_constr <- list(A = matrix(constraint_weights, nrow = 1), e = 0)
     latent <- ~ 1 +
-      f(wwtp_id, model = "iid", constr = TRUE, hyper = level_prior) +
+      f(wwtp_id, model = "iid", constr = TRUE) +
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
       f(wwtp_dev, model = "iid", n = n_wwtp, constr = FALSE, extraconstr = ar1_constr,
         group = time_wwtp, control.group = list(model = "ar1"))
@@ -124,7 +120,7 @@ fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1"),
     site_precision <- rw1_site_precision(n_wwtp, n_time)
     site_constr <- rw1_site_constraints(inla_data, constraint_weights)
     latent <- ~ 1 +
-      f(wwtp_id, model = "iid", constr = TRUE, hyper = level_prior) +
+      f(wwtp_id, model = "iid", constr = TRUE) +
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
       # rankdef = number of constraints: INLA does not correct the prior's
       # normalising constant for `extraconstr`, and with rankdef = n_wwtp the
@@ -295,8 +291,13 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
   constraint_weights <- match.arg(constraint_weights)
   grid <- build_site_time_grid(dat, time_step)
   plant_weights <- if (constraint_weights == "population") {
+    # Scaled to mean 1: the constraint is the same. With raw populations
+    # (~1e5) the AR1 fit was unstable (levels pushed into the deviations,
+    # rho ~0.99, bimodal hyperparameters), while equal weights were fine;
+    # suspected cause: INLA's constraint correction at that scale.
     site_info <- get_site_info(dat)
-    site_info$population[match(levels(dat$wwtp), site_info$wwtp)]
+    pop <- site_info$population[match(levels(dat$wwtp), site_info$wwtp)]
+    pop / mean(pop)
   } else {
     rep(1, nlevels(dat$wwtp))
   }
