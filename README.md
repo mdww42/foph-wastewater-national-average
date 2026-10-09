@@ -20,11 +20,12 @@ All produce a population-weighted (configurable) national series.
 | **INLA_RW1** (optional, off by default) | as INLA_AR1 | as INLA_AR1, but the WWTP deviations are a RW1 over time bins (as in Riou et al., [multilevel_wbe](https://github.com/foph-modelling/multilevel_wbe)), summing to zero per bin and centred per WWTP |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
-Each INLA model also gives its own national series, "<model> national term": the
-intercept, the weighted plant levels and the national RW2. With the deviations'
-weighted per-week sum fixed at zero (`CONSTRAINT_WEIGHTS`, equal or population), this
-is the weighted average of the plant curves on the log scale (a geometric mean), with
-no aggregation of plant draws needed.
+Each INLA model gives three national series from the same draws: the population-weighted
+arithmetic mean of the plant curves, the population-weighted geometric mean ("geometric"),
+and the model's own national RW2 ("national term", the equal-weight geometric mean). The
+deviations sum to zero with equal weights; population weights in that constraint made the
+AR1 fit push the plant levels into the deviations (rho ~0.99), so weighting is done when
+aggregating instead.
 
 The INLA models to fit are set in `INLA_MODELS` in `analysis.R`; WAIC, the
 constraint checks and a side-by-side plot of the WWTP deviations (log scale)

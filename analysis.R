@@ -42,13 +42,10 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 #          add `INLA_RW1 = "rw1"` as a sensitivity check.
 INLA_MODELS <- c(INLA_AR1 = "ar1")
 
-# Weights for the deviations' per-week sum to zero. Each INLA model's national
-# term (shown as "<model> national term") is then the weighted average of the
-# plant curves on the log scale (a geometric mean); the other national series
-# is the weighted arithmetic mean of the plant curves.
-#   "equal":      every plant counts the same
-#   "population": plants count by their population
-CONSTRAINT_WEIGHTS <- "population"
+# National series per INLA model, all from the same posterior draws:
+#   "<model>":               population-weighted arithmetic mean of plant curves
+#   "<model> geometric":     population-weighted geometric mean (log scale)
+#   "<model> national term": the model's national RW2, equal-weight geometric
 
 # Positive samples at or below the LOQ (sars-cov-2 ~16%, influenza A ~48%).
 # The lab considers them usable concentrations.
@@ -103,8 +100,7 @@ models <- fit_models(
   dat_clean,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
   weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
-  blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING,
-  constraint_weights = CONSTRAINT_WEIGHTS
+  blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
 )
 m_gam <- models$fits$GAM
 inla_fits <- models$fits[names(INLA_MODELS)]
@@ -187,20 +183,18 @@ imap(inla_fits, \(m, model) tibble(model = model, waic = m$waic$waic, p_eff = m$
   bind_rows()
 
 # site deviations must satisfy their constraints (range ~0):
-#   AR1: weighted sum over all plants is 0 in every time bin -- if not, the
-#        extraconstr was not applied per group
+#   AR1: sum over all plants is 0 in every time bin -- if not, constr = TRUE
+#        did not apply per group
 #   RW1: the explicit extraconstr rows (per-bin sums and per-plant means)
 if ("INLA_AR1" %in% names(inla_fits)) {
   inla_site_deviations(inla_fits$INLA_AR1, levels(dat$wwtp)) |>
-    mutate(w = models$plant_weights[as.integer(wwtp)]) |>
     group_by(time) |>
-    summarise(total = sum(w * mean) / sum(w)) |>
+    summarise(total = sum(mean)) |>
     pull(total) |>
     range()
 }
 if ("INLA_RW1" %in% names(inla_fits)) {
-  range(rw1_site_constraints(models$inla_data, models$plant_weights)$A %*%
-          inla_fits$INLA_RW1$summary.random$wwtp_dev$mean)
+  range(rw1_site_constraints(models$inla_data)$A %*% inla_fits$INLA_RW1$summary.random$wwtp_dev$mean)
 }
 
 plot_model_components(dat, inla_fits, gam_term_grid(m_gam, models$grid))
@@ -244,8 +238,7 @@ if (RUN_BACKTEST) {
     dat_clean, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
     weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
-    blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING,
-    constraint_weights = CONSTRAINT_WEIGHTS
+    blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
   )
 
   final_estimates <- national_summary |>

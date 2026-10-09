@@ -91,34 +91,28 @@ build_inla_data <- function(dat, grid) {
 # effect, i.e. more spread than the Gamma noise; its PC prior shrinks the
 # extra SD towards 0, so ~0 means they behave like quantified samples.
 #
-# constraint_weights: one weight per plant (in wwtp_id order) for the per-bin
-# sum to zero of the deviations. Equal weights make the national RW2 the
-# plants' plain average on the log scale; population weights make it the
-# population-weighted one (see national_term_draws()). For AR1 the weights
-# are fixed over time, so plants not yet surveilled still count in early bins
-# (with deviations ~0); RW1 constrains active plants only.
-fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1"),
-                     blq_extra = FALSE, constraint_weights = NULL) {
+# The sum to zero gives every plant the same weight. Population weights were
+# tried and dropped: the national RW2 then follows the large plants, so what
+# the small plants share (e.g. a slow common drift) has to sit in their
+# independent deviations; for sars-cov-2 rho went to ~0.99 and the plant
+# levels moved into the deviations. Population weighting is done when
+# aggregating the plant curves instead (aggregate_national_draws()).
+fit_inla <- function(inla_data, censor, site_dev = c("ar1", "rw1"), blq_extra = FALSE) {
   site_dev <- match.arg(site_dev)
   inla_data <- inla_data |> mutate(wwtp_dev = wwtp_id)
-  n_wwtp <- max(inla_data$wwtp_id)
-  if (is.null(constraint_weights)) constraint_weights <- rep(1, n_wwtp)
 
   if (site_dev == "ar1") {
-    # `extraconstr` on a grouped term is applied within each group, i.e. in
-    # every time bin: sum_i w_i * d_it = 0.
-    ar1_constr <- list(A = matrix(constraint_weights, nrow = 1), e = 0)
     latent <- ~ 1 +
       f(wwtp_id, model = "iid", constr = TRUE) +
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
-      f(wwtp_dev, model = "iid", n = n_wwtp, constr = FALSE, extraconstr = ar1_constr,
+      f(wwtp_dev, model = "iid", constr = TRUE,
         group = time_wwtp, control.group = list(model = "ar1"))
   } else {
     n_wwtp <- max(inla_data$wwtp_id)
     n_time <- max(inla_data$time_wwtp)
     inla_data <- inla_data |> mutate(wwtp_dev = (time_wwtp - 1L) * n_wwtp + wwtp_id)
     site_precision <- rw1_site_precision(n_wwtp, n_time)
-    site_constr <- rw1_site_constraints(inla_data, constraint_weights)
+    site_constr <- rw1_site_constraints(inla_data)
     latent <- ~ 1 +
       f(wwtp_id, model = "iid", constr = TRUE) +
       f(time_ch, model = "rw2", scale.model = TRUE, constr = TRUE) +
@@ -177,30 +171,24 @@ rw1_site_precision <- function(n_wwtp, n_time) {
 # vector runs over WWTPs within each time bin, so plant i in bin t is entry
 # (t - 1) * n_wwtp + i. Only a plant's active bins (rows in `inla_data`: its
 # first sample to the end of the grid) are constrained:
-#   - per bin, the active plants' weighted deviations sum to zero (as in the
-#     AR1 version, minus plants not yet surveilled);
+#   - per bin, the active plants' deviations sum to zero (the AR1 version's
+#     `constr = TRUE`, minus plants not yet surveilled);
 #   - per plant, its deviations average to zero over its active bins, as in
 #     Riou et al. The RW1 does not penalise a plant's overall level, which
 #     would otherwise trade off against the iid baseline.
-# With equal weights both sets add up every active cell once, so one plant
-# row is redundant and is dropped.
-rw1_site_constraints <- function(inla_data, weights = NULL) {
+# Both sets add up every active cell once, so one plant row is redundant and
+# is dropped.
+rw1_site_constraints <- function(inla_data) {
   n_wwtp <- max(inla_data$wwtp_id)
   n_time <- max(inla_data$time_wwtp)
   active <- inla_data |> distinct(wwtp_id, time_wwtp)
-  if (is.null(weights)) weights <- rep(1, n_wwtp)
   index <- (active$time_wwtp - 1L) * n_wwtp + active$wwtp_id
 
-  by_bin <- split(seq_along(index), active$time_wwtp)
   by_wwtp <- split(index, active$wwtp_id)
+  rows <- c(split(index, active$time_wwtp), by_wwtp[-length(by_wwtp)])
 
-  A <- matrix(0, nrow = length(by_bin) + length(by_wwtp), ncol = n_wwtp * n_time)
-  for (k in seq_along(by_bin)) {
-    cells <- by_bin[[k]]
-    A[k, index[cells]] <- weights[active$wwtp_id[cells]]
-  }
-  for (k in seq_along(by_wwtp)) A[length(by_bin) + k, by_wwtp[[k]]] <- 1
-  if (qr(A)$rank < nrow(A)) A <- A[-nrow(A), , drop = FALSE]
+  A <- matrix(0, nrow = length(rows), ncol = n_wwtp * n_time)
+  for (k in seq_along(rows)) A[k, rows[[k]]] <- 1
   if (qr(A)$rank < nrow(A)) stop("RW1 site constraints are linearly dependent.")
 
   list(A = A, e = rep(0, nrow(A)))
@@ -232,25 +220,22 @@ predict_inla_site <- function(samples, inla_data) {
   exp(eta_draws)
 }
 
-# The model's own national series: exp(alpha + sum_i w_i b_i + omega_t), per
-# draw and prediction day. With the deviations' weighted sum fixed at zero,
-# this is exactly the w-weighted average of the plants' curves on the log
-# scale (a weighted geometric mean), so no aggregation of plant draws is
-# needed. Same output shape as aggregate_national_draws().
-national_term_draws <- function(samples, m_inla, grid, weights, model_name) {
+# The model's own national series: exp(alpha + omega_t), per draw and
+# prediction day. With the plant levels and deviations summing to zero, this
+# is the equal-weight average of all plants' curves on the log scale (a
+# geometric mean). Same output shape as aggregate_national_draws().
+national_term_draws <- function(samples, m_inla, grid, model_name) {
   index <- grid |> distinct(day, date, time) |> arrange(day)
   latent_names <- rownames(samples[[1]]$latent)
   row_of <- function(term, ids) match(paste0(term, ":", ids), latent_names)
 
   i_alpha <- match("(Intercept):1", latent_names)
   i_omega <- row_of("time_ch", match(index$time, m_inla$summary.random$time_ch$ID))
-  i_level <- row_of("wwtp_id", seq_along(weights))
-  if (anyNA(c(i_alpha, i_omega, i_level))) stop("Could not find the national terms in the posterior samples.")
-  w <- weights / sum(weights)
+  if (anyNA(c(i_alpha, i_omega))) stop("Could not find the national terms in the posterior samples.")
 
   draws <- t(vapply(samples, function(s) {
     x <- s$latent[, 1]
-    exp(x[i_alpha] + sum(w * x[i_level]) + x[i_omega])
+    exp(x[i_alpha] + x[i_omega])
   }, numeric(nrow(index))))
 
   index <- dplyr::select(index, day, date)
@@ -279,28 +264,15 @@ national_term_draws <- function(samples, m_inla, grid, weights, model_name) {
 #   "drop":   removed
 # The GAM always uses below-LOQ samples as measured and drops zeros (a
 # censored GAM would need mgcv::cnorm()).
-# constraint_weights: "equal" or "population" weights for the deviations'
-# per-bin sum to zero (see fit_inla()). Each INLA model also returns its
-# national term as an extra national series, labelled "<model> national term".
+# Each INLA model gives three national series: "<model>" (population-weighted
+# arithmetic mean of the plant curves), "<model> geometric" (population-
+# weighted geometric mean) and "<model> national term" (the national RW2).
 fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
                        blq_handling = c("censored", "observed", "observed_extra"),
-                       zero_handling = c("censor", "drop"),
-                       constraint_weights = c("equal", "population")) {
+                       zero_handling = c("censor", "drop")) {
   blq_handling <- match.arg(blq_handling)
   zero_handling <- match.arg(zero_handling)
-  constraint_weights <- match.arg(constraint_weights)
   grid <- build_site_time_grid(dat, time_step)
-  plant_weights <- if (constraint_weights == "population") {
-    # Scaled to mean 1: the constraint is the same. With raw populations
-    # (~1e5) the AR1 fit was unstable (levels pushed into the deviations,
-    # rho ~0.99, bimodal hyperparameters), while equal weights were fine;
-    # suspected cause: INLA's constraint correction at that scale.
-    site_info <- get_site_info(dat)
-    pop <- site_info$population[match(levels(dat$wwtp), site_info$wwtp)]
-    pop / mean(pop)
-  } else {
-    rep(1, nlevels(dat$wwtp))
-  }
   dat_positive <- dat |> filter(viral_load > 0)
 
   dat_inla <- (if (zero_handling == "drop") dat_positive else dat) |>
@@ -314,7 +286,7 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
 
   fits <- c(
     list(GAM = fit_gam(dat_positive)),
-    map(inla_models, \(site_dev) fit_inla(inla_data, censor, site_dev, blq_extra, plant_weights))
+    map(inla_models, \(site_dev) fit_inla(inla_data, censor, site_dev, blq_extra))
   )
 
   inla_samples <- map(fits[names(inla_models)], \(fit) {
@@ -328,7 +300,7 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
   )
 
   national_terms <- imap(inla_samples, \(samples, model) {
-    national_term_draws(samples, fits[[model]], grid, plant_weights, paste(model, "national term"))
+    national_term_draws(samples, fits[[model]], grid, paste(model, "national term"))
   })
   names(national_terms) <- paste(names(national_terms), "national term")
 
@@ -336,10 +308,15 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
     grid = grid,
     inla_data = inla_data,
     fits = fits,
-    plant_weights = plant_weights,
     site_draws = site_draws,
     national = c(
       imap(site_draws, \(draws, model) aggregate_national_draws(draws, grid, model, weighted)),
+      set_names(
+        imap(site_draws[names(inla_models)], \(draws, model) {
+          aggregate_national_draws(draws, grid, paste(model, "geometric"), weighted, mean = "geometric")
+        }),
+        paste(names(inla_models), "geometric")
+      ),
       national_terms
     )
   )

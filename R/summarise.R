@@ -11,16 +11,21 @@ summarise_draw_columns <- function(draws) {
   )
 }
 
-# Population-weighted (or unweighted) national series from site-level draws.
-# Returns the per-day summary plus the national draws, which the trend
-# summaries need.
-aggregate_national_draws <- function(site_draws, grid, model_name, weighted = TRUE) {
+# Population-weighted (or unweighted) national series from site-level draws,
+# over the plants active on each day. Returns the per-day summary plus the
+# national draws, which the trend summaries need.
+#   "arithmetic": weighted mean of the loads (dominated by high-level plants)
+#   "geometric":  weighted mean on the log scale (the typical plant)
+aggregate_national_draws <- function(site_draws, grid, model_name, weighted = TRUE,
+                                     mean = c("arithmetic", "geometric")) {
+  mean <- match.arg(mean)
   index <- grid |> distinct(day, date) |> arrange(day)
 
   national_draws <- vapply(index$day, function(d) {
     ii <- which(grid$day == d)
     w <- if (weighted) grid$weight[ii] else rep(1 / length(ii), length(ii))
-    drop(site_draws[, ii, drop = FALSE] %*% w)
+    x <- site_draws[, ii, drop = FALSE]
+    if (mean == "geometric") drop(exp(log(x) %*% w)) else drop(x %*% w)
   }, numeric(nrow(site_draws)))
 
   list(
