@@ -220,31 +220,17 @@ predict_inla_site <- function(samples, inla_data) {
   exp(eta_draws)
 }
 
-# The model's own national series: exp(alpha + omega_t), per draw and
-# prediction day. With the plant levels and deviations summing to zero, this
-# is the equal-weight average of all plants' curves on the log scale (a
-# geometric mean). Same output shape as aggregate_national_draws().
-national_term_draws <- function(samples, m_inla, grid, model_name) {
-  index <- grid |> distinct(day, date, time) |> arrange(day)
+# Posterior draws of the plant deviations d (log scale) at the grid's plant x
+# time-bin points, n_samples x nrow(grid). In both versions the latent vector
+# runs over plants within time bins; for AR1 the bins are the group index
+# (position among the time bins in the data), for RW1 the time bin itself.
+inla_deviation_draws <- function(samples, grid, inla_data, site_dev) {
   latent_names <- rownames(samples[[1]]$latent)
-  row_of <- function(term, ids) match(paste0(term, ":", ids), latent_names)
-
-  i_alpha <- match("(Intercept):1", latent_names)
-  i_omega <- row_of("time_ch", match(index$time, m_inla$summary.random$time_ch$ID))
-  if (anyNA(c(i_alpha, i_omega))) stop("Could not find the national terms in the posterior samples.")
-
-  draws <- t(vapply(samples, function(s) {
-    x <- s$latent[, 1]
-    exp(x[i_alpha] + x[i_omega])
-  }, numeric(nrow(index))))
-
-  index <- dplyr::select(index, day, date)
-  list(
-    summary = bind_cols(index, summarise_draw_columns(draws)) |> mutate(model = model_name),
-    draws = draws,
-    index = index,
-    model = model_name
-  )
+  n_wwtp <- max(inla_data$wwtp_id)
+  time_pos <- if (site_dev == "rw1") grid$time else match(grid$time, sort(unique(inla_data$time_wwtp)))
+  rows <- match(paste0("wwtp_dev:", (time_pos - 1L) * n_wwtp + grid$wwtp_id), latent_names)
+  if (anyNA(rows)) stop("Could not match all grid points to the deviation term in the posterior samples.")
+  t(vapply(samples, function(s) s$latent[rows, 1], numeric(nrow(grid))))
 }
 
 # ---- All models ---------------------------------------------------------
@@ -264,9 +250,6 @@ national_term_draws <- function(samples, m_inla, grid, model_name) {
 #   "drop":   removed
 # The GAM always uses below-LOQ samples as measured and drops zeros (a
 # censored GAM would need mgcv::cnorm()).
-# Each INLA model gives three national series: "<model>" (population-weighted
-# arithmetic mean of the plant curves), "<model> geometric" (population-
-# weighted geometric mean) and "<model> national term" (the national RW2).
 fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
                        blq_handling = c("censored", "observed", "observed_extra"),
                        zero_handling = c("censor", "drop")) {
@@ -299,25 +282,16 @@ fit_models <- function(dat, time_step, n_samples, seed, weighted, inla_models,
     map(inla_samples, predict_inla_site, inla_data = inla_data)
   )
 
-  national_terms <- imap(inla_samples, \(samples, model) {
-    national_term_draws(samples, fits[[model]], grid, paste(model, "national term"))
+  deviation_draws <- imap(inla_samples, \(samples, model) {
+    inla_deviation_draws(samples, grid, inla_data, inla_models[[model]])
   })
-  names(national_terms) <- paste(names(national_terms), "national term")
 
   list(
     grid = grid,
     inla_data = inla_data,
     fits = fits,
     site_draws = site_draws,
-    national = c(
-      imap(site_draws, \(draws, model) aggregate_national_draws(draws, grid, model, weighted)),
-      set_names(
-        imap(site_draws[names(inla_models)], \(draws, model) {
-          aggregate_national_draws(draws, grid, paste(model, "geometric"), weighted, mean = "geometric")
-        }),
-        paste(names(inla_models), "geometric")
-      ),
-      national_terms
-    )
+    deviation_draws = deviation_draws,
+    national = imap(site_draws, \(draws, model) aggregate_national_draws(draws, grid, model, weighted))
   )
 }

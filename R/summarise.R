@@ -14,18 +14,17 @@ summarise_draw_columns <- function(draws) {
 # Population-weighted (or unweighted) national series from site-level draws,
 # over the plants active on each day. Returns the per-day summary plus the
 # national draws, which the trend summaries need.
-#   "arithmetic": weighted mean of the loads (dominated by high-level plants)
-#   "geometric":  weighted mean on the log scale (the typical plant)
-aggregate_national_draws <- function(site_draws, grid, model_name, weighted = TRUE,
-                                     mean = c("arithmetic", "geometric")) {
-  mean <- match.arg(mean)
+# A weighted geometric mean (log scale) and the model's own national RW2 were
+# compared: the geometric mean gave practically the same curve and trend for
+# sars-cov-2 and influenza A; the RW2 (equal weights) sat lower, as small
+# plants count as much as Zurich.
+aggregate_national_draws <- function(site_draws, grid, model_name, weighted = TRUE) {
   index <- grid |> distinct(day, date) |> arrange(day)
 
   national_draws <- vapply(index$day, function(d) {
     ii <- which(grid$day == d)
     w <- if (weighted) grid$weight[ii] else rep(1 / length(ii), length(ii))
-    x <- site_draws[, ii, drop = FALSE]
-    if (mean == "geometric") drop(exp(log(x) %*% w)) else drop(x %*% w)
+    drop(site_draws[, ii, drop = FALSE] %*% w)
   }, numeric(nrow(site_draws)))
 
   list(
@@ -124,6 +123,70 @@ latest_site_trends <- function(site_trends, dat) {
     ungroup() |>
     left_join(last_obs, by = "wwtp") |>
     mutate(days_since_last_obs = as.integer(max(dat$date) - last_obs_date))
+}
+
+# ---- WWTP compared with the national trend -----------------------------------
+
+classify_status <- function(p_above, p_in_line, p_below, prob = 0.8) {
+  case_when(
+    p_above >= prob ~ "above",
+    p_below >= prob ~ "below",
+    p_in_line >= prob ~ "in line",
+    TRUE ~ "uncertain"
+  )
+}
+
+# Is a plant currently higher or lower than usual, relative to the national
+# trend? Uses the plant deviation d, which excludes the plant's permanent level
+# (catchment effects). d is relative to the model's national term, an
+# equal-weight average of the plants; per draw it is re-centred on the
+# population-weighted mean deviation of the plants active in that bin, so 0
+# means in line with the population-weighted national trend shown on the
+# dashboard. Then averaged over the last `window_bins` bins and classified:
+# above / below if >= `prob` of draws are beyond x`threshold` / x1/`threshold`,
+# in line if >= `prob` are within. Plants without a sample for more than
+# `max_gap_days` show "no recent data": their AR1 deviation fades to 0, which
+# would read as "in line".
+summarise_site_status <- function(dev_draws, grid, dat, model_name, window_bins,
+                                  threshold, max_gap_days, prob = 0.8) {
+  for (t in unique(grid$time)) {
+    ii <- which(grid$time == t)
+    dev_draws[, ii] <- dev_draws[, ii] - drop(dev_draws[, ii, drop = FALSE] %*% grid$weight[ii])
+  }
+  cut <- log(threshold)
+
+  grid |>
+    mutate(col = row_number()) |>
+    group_by(wwtp) |>
+    arrange(time, .by_group = TRUE) |>
+    group_modify(\(site, key) {
+      sums <- t(apply(dev_draws[, site$col, drop = FALSE], 1, cumsum))
+      if (nrow(site) == 1) sums <- t(sums)
+      # running sum over the last `window_bins` bins; the first bins get NA
+      lagged <- cbind(matrix(0, nrow(sums), 1), sums)[, pmax(seq_len(ncol(sums)) + 1L - window_bins, 1L), drop = FALSE]
+      roll <- (sums - lagged) / window_bins
+      roll[, seq_len(min(window_bins - 1L, ncol(roll)))] <- NA
+
+      sample_days <- sort(as.numeric(dat$date[dat$wwtp == key$wwtp]))
+      last_sample <- sample_days[pmax(findInterval(as.numeric(site$date), sample_days), 1L)]
+
+      site |>
+        dplyr::select(time, day, date) |>
+        bind_cols(summarise_draw_columns(exp(roll))) |>
+        mutate(
+          p_above = colMeans(roll > cut),
+          p_below = colMeans(roll < -cut),
+          p_in_line = 1 - p_above - p_below,
+          days_since_last_obs = as.integer(as.numeric(date) - last_sample),
+          status = case_when(
+            is.na(p_above) ~ NA_character_,
+            days_since_last_obs > max_gap_days ~ "no recent data",
+            TRUE ~ classify_status(p_above, p_in_line, p_below, prob)
+          )
+        )
+    }) |>
+    ungroup() |>
+    mutate(model = model_name, window_bins = window_bins, threshold = threshold)
 }
 
 # ---- Model-free reference -------------------------------------------------

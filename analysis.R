@@ -33,6 +33,11 @@ TREND_DAYS <- 21L
 TREND_STABLE_THRESHOLD <- 0.10    # +/- 10% over TREND_DAYS counts as "stable"
 RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 
+# WWTPs compared with the national trend (see summarise_site_status())
+STATUS_WINDOW_BINS <- 3L          # time bins averaged (3 x 7 days)
+STATUS_THRESHOLD <- 1.25          # above x1.25 / below x0.8 counts as above / below
+STATUS_MAX_GAP_DAYS <- 10L        # no sample for longer -> "no recent data"
+
 # INLA models to fit and compare, label = time structure of the WWTP
 # deviations (see fit_inla()):
 #   "ar1": pulled back to 0 (fitted weekly rho ~0.8 sars-cov-2, ~0.7
@@ -41,11 +46,6 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 #          after a plant's last sample. Same deviations in the backtest;
 #          add `INLA_RW1 = "rw1"` as a sensitivity check.
 INLA_MODELS <- c(INLA_AR1 = "ar1")
-
-# National series per INLA model, all from the same posterior draws:
-#   "<model>":               population-weighted arithmetic mean of plant curves
-#   "<model> geometric":     population-weighted geometric mean (log scale)
-#   "<model> national term": the model's national RW2, equal-weight geometric
 
 # Positive samples at or below the LOQ (sars-cov-2 ~16%, influenza A ~48%).
 # The lab considers them usable concentrations.
@@ -119,6 +119,12 @@ trends <- map(models$national, summarise_trend_draws,
 
 site_trends <- imap(models$site_draws, \(draws, model) {
   summarise_site_trends(draws, models$grid, model, TREND_DAYS, TREND_STABLE_THRESHOLD)
+}) |>
+  bind_rows()
+
+site_status <- imap(models$deviation_draws, \(draws, model) {
+  summarise_site_status(draws, models$grid, dat_clean, model,
+                        STATUS_WINDOW_BINS, STATUS_THRESHOLD, STATUS_MAX_GAP_DAYS)
 }) |>
   bind_rows()
 
@@ -205,8 +211,26 @@ plot_site_deviations(inla_fits, models$grid, WWTP_SELECTION)
 # National signal and trend
 # -------------------------------------------------------------------------
 
-(plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS)+scale_y_log10()) /
+plot_national_dashboard(national_summary, trends, model_name = names(INLA_MODELS)[1])
+
+# all models and the raw reference, full period
+(plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS) + scale_y_log10()) /
   plot_trend(trends, "interpolated difference")
+
+# -------------------------------------------------------------------------
+# WWTPs compared with the national trend
+# -------------------------------------------------------------------------
+
+site_status |>
+  group_by(model) |>
+  filter(date == max(date)) |>
+  ungroup() |>
+  dplyr::select(model, wwtp, date, estimate, lower, upper, status, days_since_last_obs) |>
+  arrange(model, desc(estimate))
+
+plot_site_status_latest(site_status)
+plot_site_status_heatmap(site_status)
+plot_site_status_heatmap(site_status, fill = "deviation")
 
 # -------------------------------------------------------------------------
 # WWTP trends
@@ -273,6 +297,9 @@ if (EXPORT_FIGURES) {
       plot_trend(trends, "interpolated difference"),
     "national", height = 8
   )
+  save_figure(plot_national_dashboard(national_summary, trends, names(INLA_MODELS)[1]), "national_dashboard")
+  save_figure(plot_site_status_latest(site_status), "status_latest", width = 9)
+  save_figure(plot_site_status_heatmap(site_status), "status_heatmap", height = 5)
   save_figure(plot_site_fit(site_summary, dat, WWTP_SELECTION), "site_fit")
   save_figure(plot_site_deviations(inla_fits, models$grid, WWTP_SELECTION), "deviations")
   save_figure(plot_model_components(dat, inla_fits, gam_term_grid(m_gam, models$grid)),
