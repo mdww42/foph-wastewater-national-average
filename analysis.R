@@ -42,6 +42,14 @@ RAW_SMOOTH_WINDOW <- 7L           # days, for the model-free reference
 #          add `INLA_RW1 = "rw1"` as a sensitivity check.
 INLA_MODELS <- c(INLA_AR1 = "ar1")
 
+# Weights for the deviations' per-week sum to zero. Each INLA model's national
+# term (shown as "<model> national term") is then the weighted average of the
+# plant curves on the log scale (a geometric mean); the other national series
+# is the weighted arithmetic mean of the plant curves.
+#   "equal":      every plant counts the same
+#   "population": plants count by their population
+CONSTRAINT_WEIGHTS <- "population"
+
 # Positive samples at or below the LOQ (sars-cov-2 ~16%, influenza A ~48%).
 # The lab considers them usable concentrations.
 #   "censored":       INLA treats them as left-censored at the LOQ in load
@@ -71,6 +79,7 @@ OUTLIER_FACTOR <- 10
 WWTP_SELECTION <- c("aire", "werdhoelzli", "chur", "laupen")  # for the fit-vs-data plot
 
 RUN_BACKTEST <- FALSE             # refits all models per cutoff -- slow
+EXPORT_FIGURES <- FALSE           # PNGs for presentation/ (see end of script)
 
 # -------------------------------------------------------------------------
 # Data
@@ -94,7 +103,8 @@ models <- fit_models(
   dat_clean,
   time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
   weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
-  blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
+  blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING,
+  constraint_weights = CONSTRAINT_WEIGHTS
 )
 m_gam <- models$fits$GAM
 inla_fits <- models$fits[names(INLA_MODELS)]
@@ -177,18 +187,20 @@ imap(inla_fits, \(m, model) tibble(model = model, waic = m$waic$waic, p_eff = m$
   bind_rows()
 
 # site deviations must satisfy their constraints (range ~0):
-#   AR1: sum to 0 over all plants in every time bin -- if not, constr = TRUE
-#        did not apply per group and needs an explicit extraconstr
+#   AR1: weighted sum over all plants is 0 in every time bin -- if not, the
+#        extraconstr was not applied per group
 #   RW1: the explicit extraconstr rows (per-bin sums and per-plant means)
 if ("INLA_AR1" %in% names(inla_fits)) {
   inla_site_deviations(inla_fits$INLA_AR1, levels(dat$wwtp)) |>
+    mutate(w = models$plant_weights[as.integer(wwtp)]) |>
     group_by(time) |>
-    summarise(total = sum(mean)) |>
+    summarise(total = sum(w * mean) / sum(w)) |>
     pull(total) |>
     range()
 }
 if ("INLA_RW1" %in% names(inla_fits)) {
-  range(rw1_site_constraints(models$inla_data)$A %*% inla_fits$INLA_RW1$summary.random$wwtp_dev$mean)
+  range(rw1_site_constraints(models$inla_data, models$plant_weights)$A %*%
+          inla_fits$INLA_RW1$summary.random$wwtp_dev$mean)
 }
 
 plot_model_components(dat, inla_fits, gam_term_grid(m_gam, models$grid))
@@ -232,11 +244,12 @@ if (RUN_BACKTEST) {
     dat_clean, backtest_cutoffs,
     time_step = TIME_STEP, n_samples = N_SAMPLES, seed = SEED,
     weighted = USE_POPULATION_WEIGHTS, inla_models = INLA_MODELS,
-    blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING
+    blq_handling = BLQ_HANDLING, zero_handling = ZERO_HANDLING,
+    constraint_weights = CONSTRAINT_WEIGHTS
   )
 
   final_estimates <- national_summary |>
-    filter(model %in% c("GAM", names(INLA_MODELS))) |>
+    filter(model %in% names(models$national)) |>
     dplyr::select(date, model, final_estimate = estimate, final_lower = lower, final_upper = upper)
 
   backtest_results |>
@@ -245,4 +258,34 @@ if (RUN_BACKTEST) {
     print()
 
   print(plot_backtest(backtest_results, final_estimates, backtest_cutoffs, plot_window_days))
+}
+
+# -------------------------------------------------------------------------
+# Figures for the team presentation
+# -------------------------------------------------------------------------
+
+# Writes presentation/figures/<PATHOGEN>_<name>.png. Run once per pathogen
+# (the page uses sars-cov-2 and influenza_a); with RUN_BACKTEST also the
+# backtest figure.
+if (EXPORT_FIGURES) {
+  fig_dir <- fs::path(current_dir, "presentation", "figures")
+  fs::dir_create(fig_dir)
+  save_figure <- function(plot, name, width = 11, height = 6) {
+    ggsave(fs::path(fig_dir, paste0(PATHOGEN, "_", name, ".png")), plot,
+           width = width, height = height, dpi = 150, bg = "white")
+  }
+
+  save_figure(
+    (plot_national(national_summary, weighted = USE_POPULATION_WEIGHTS) + scale_y_log10()) /
+      plot_trend(trends, "interpolated difference"),
+    "national", height = 8
+  )
+  save_figure(plot_site_fit(site_summary, dat, WWTP_SELECTION), "site_fit")
+  save_figure(plot_site_deviations(inla_fits, models$grid, WWTP_SELECTION), "deviations")
+  save_figure(plot_model_components(dat, inla_fits, gam_term_grid(m_gam, models$grid)),
+              "components", width = 12, height = 9)
+  if (RUN_BACKTEST) {
+    save_figure(plot_backtest(backtest_results, final_estimates, backtest_cutoffs, plot_window_days),
+                "backtest", width = 12, height = 6)
+  }
 }
