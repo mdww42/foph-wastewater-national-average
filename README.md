@@ -16,7 +16,7 @@ All produce a population-weighted (configurable) national series.
 | Approach | Model | Site structure |
 |---|---|---|
 | **GAM** (`mgcv`) | Gaussian on `log1p(viral_load)`, back-transformed to the mean via `expm1(mu + sig2/2)` | shared smooth of time + WWTP-specific deviation smooths (`bs = "sz"`, which carry the WWTP levels) |
-| **INLA_AR1** | Gamma (log link) on `viral_load`; non-detects left-censored at the LOQ (`gammasurv`), below-LOQ samples per `BLQ_HANDLING` | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin); INLA default priors |
+| **INLA_AR1** | Gamma (log link) on `viral_load`; non-detects left-censored at a detection floor (`gammasurv`), below-LOQ samples per `BLQ_HANDLING` | WWTP iid intercept + national RW2 + WWTP deviations (AR1 over weekly bins, sum to zero per bin); INLA default priors |
 | **INLA_RW1** (optional, off by default) | as INLA_AR1 | as INLA_AR1, but the WWTP deviations are a RW1 over time bins (as in Riou et al., [multilevel_wbe](https://github.com/foph-modelling/multilevel_wbe)), summing to zero per bin and centred per WWTP |
 | **Raw reference** | none | per-WWTP rolling median, then weighted national mean |
 
@@ -30,9 +30,11 @@ constraint checks and a side-by-side plot of the WWTP deviations (log scale)
 compare them.
 
 For all models, 2000 posterior draws are taken at each WWTP × time-bin point, then
-aggregated with population weights into national draws. Trends (% change over 21 days,
+aggregated with population weights into national draws. Trends (change over 21 days,
 with P(increasing / stable / decreasing)) are computed from those draws, nationally and
-per WWTP.
+per WWTP. Each WWTP is also classified as above / in line / below the national trend,
+from its deviation re-centred on the population-weighted mean deviation
+(`summarise_site_status()`).
 
 A nowcast backtest (refit on data truncated at a few cutoff dates, compared with the
 full-data estimate) is included but off by default (`RUN_BACKTEST <- FALSE`).
